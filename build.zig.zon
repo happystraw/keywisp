@@ -1,0 +1,21 @@
+.{
+    .name = .keywisp,
+    .version = "0.1.0",
+    .fingerprint = 0x5ddfe8b55aa71914,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .wayland = .{
+            .url = "https://codeberg.org/ifreund/zig-wayland/archive/v0.6.0.tar.gz",
+            .hash = "wayland-0.6.0-lQa1kqz8AQADQmdNJsNhLoNHcnEGEUjrOaPV-dtEnEmX",
+        },
+    },
+    .paths = .{
+        "examples",
+        "protocols",
+        "src",
+        "LICENSE",
+        "README.md",
+        "build.zig",
+        "build.zig.zon",
+    },
+}
