@@ -15,12 +15,12 @@ pub fn build(b: *std.Build) void {
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
     };
+
     const project_options = b.addOptions();
     project_options.addOption([]const u8, "name", project_name);
     project_options.addOption([]const u8, "version", manifest.version);
     const project_mod = project_options.createModule();
 
-    const wayland_mod = createWaylandModule(b, options);
     const protocol_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol.zig"),
         .target = options.target,
@@ -47,7 +47,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "project", .module = project_mod },
             .{ .name = "protocol", .module = protocol_mod },
-            .{ .name = "wayland", .module = wayland_mod },
+            .{ .name = "wayland", .module = createWaylandModule(b, options) },
         },
     });
     output_mod.linkSystemLibrary("cairo", .{});
@@ -57,11 +57,15 @@ pub fn build(b: *std.Build) void {
     output_mod.linkSystemLibrary("wayland-client", .{});
     output_mod.linkSystemLibrary("xkbcommon", .{});
 
-    const main_mod = b.createModule(.{
+    const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = options.target,
         .optimize = options.optimize,
         .link_libc = true,
+        .strip = switch (options.optimize) {
+            .ReleaseSafe, .ReleaseFast => true,
+            else => null,
+        },
         .imports = &.{
             .{ .name = "project", .module = project_mod },
             .{ .name = "protocol", .module = protocol_mod },
@@ -72,7 +76,7 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = project_name,
-        .root_module = main_mod,
+        .root_module = exe_mod,
         .use_llvm = if (options.optimize == .Debug) true else null,
     });
     b.installArtifact(exe);
@@ -82,49 +86,43 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_cmd.addArgs(args);
     b.step("run", b.fmt("Run {s}", .{project_name})).dependOn(&run_cmd.step);
 
-    const input_example_mod = b.createModule(.{
-        .root_source_file = b.path("examples/input.zig"),
-        .target = options.target,
-        .optimize = options.optimize,
-    });
-    input_example_mod.addImport("input", input_mod);
-    const input_example = b.addExecutable(.{
-        .name = "input-example",
-        .root_module = input_example_mod,
-        .use_llvm = true,
-    });
-    const install_input_example = b.addInstallArtifact(input_example, .{});
-    b.step("example-input", "Build the /dev/input example").dependOn(&install_input_example.step);
+    const exe_tests = b.addTest(.{ .root_module = exe_mod, .use_llvm = true });
+    const run_exe_tests = b.addRunArtifact(exe_tests);
+    b.step("test", "Run tests").dependOn(&run_exe_tests.step);
 
-    const output_example_mod = b.createModule(.{
-        .root_source_file = b.path("examples/output.zig"),
-        .target = options.target,
-        .optimize = options.optimize,
-    });
-    output_example_mod.addImport("output", output_mod);
-    const output_example = b.addExecutable(.{
-        .name = "output-example",
-        .root_module = output_example_mod,
-        .use_llvm = true,
-    });
-    const install_output_example = b.addInstallArtifact(output_example, .{});
-    b.step("example-output", "Build the stdout output example").dependOn(&install_output_example.step);
+    addExamples(b, options, input_mod, output_mod);
+}
 
-    const main_tests = b.addTest(.{ .root_module = main_mod, .use_llvm = true });
-    const input_tests = b.addTest(.{ .root_module = input_mod, .use_llvm = true });
-    const output_tests = b.addTest(.{ .root_module = output_mod, .use_llvm = true });
-    const run_main_tests = b.addRunArtifact(main_tests);
-    const run_input_tests = b.addRunArtifact(input_tests);
-    const run_output_tests = b.addRunArtifact(output_tests);
+fn addExamples(b: *std.Build, options: Options, input_mod: *std.Build.Module, output_mod: *std.Build.Module) void {
+    const examples = [_]struct {
+        name: []const u8,
+        dependency: *std.Build.Module,
+        description: []const u8,
+    }{
+        .{ .name = "input", .dependency = input_mod, .description = "Build the /dev/input example" },
+        .{ .name = "output", .dependency = output_mod, .description = "Build the stdout output example" },
+    };
 
-    const test_input_step = b.step("test-input", "Run input module tests");
-    test_input_step.dependOn(&run_input_tests.step);
-    const test_output_step = b.step("test-output", "Run output module tests");
-    test_output_step.dependOn(&run_output_tests.step);
-    const test_step = b.step("test", "Run all unit tests");
-    test_step.dependOn(&run_main_tests.step);
-    test_step.dependOn(&run_input_tests.step);
-    test_step.dependOn(&run_output_tests.step);
+    for (examples) |example| {
+        const example_mod = b.createModule(.{
+            .root_source_file = b.path(b.fmt("examples/{s}.zig", .{example.name})),
+            .target = options.target,
+            .optimize = options.optimize,
+        });
+        example_mod.addImport(example.name, example.dependency);
+
+        const exe = b.addExecutable(.{
+            .name = b.fmt("{s}-example", .{example.name}),
+            .root_module = example_mod,
+            .use_llvm = true,
+        });
+        const install = b.addInstallArtifact(exe, .{});
+        b.step(b.fmt("example-{s}", .{example.name}), example.description).dependOn(&install.step);
+
+        const run = b.addRunArtifact(exe);
+        if (b.args) |args| run.addArgs(args);
+        b.step(b.fmt("run-example-{s}", .{example.name}), b.fmt("Run the {s} example", .{example.name})).dependOn(&run.step);
+    }
 }
 
 fn createWaylandModule(b: *std.Build, options: Options) *std.Build.Module {
