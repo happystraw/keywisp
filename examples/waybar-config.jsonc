@@ -1,0 +1,11 @@
+{
+  "layer": "top",
+  "position": "top",
+  "modules-left": ["custom/keywisp"],
+
+  "custom/keywisp": {
+    "exec": "keywisp --stdout --stdout-history 5 --stdout-emit-clear -t 2000",
+    "format": "󰌌  {}",
+    "hide-empty-text": true,
+  },
+}

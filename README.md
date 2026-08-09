@@ -2,7 +2,7 @@
 
 A small Wayland keystroke visualizer.
 
-https://github.com/user-attachments/assets/32ab35d2-0721-4a75-8d24-0e5caefdb480
+<https://github.com/user-attachments/assets/32ab35d2-0721-4a75-8d24-0e5caefdb480>
 
 ## Dependencies
 
@@ -83,6 +83,24 @@ Run the following command for all available options:
 
 ```sh
 keywisp --help
+```
+
+### Waybar integration
+
+Keywisp can run in `--stdout` mode and be used as a Waybar `custom` module.
+Each keystroke line is printed to stdout and picked up by the bar. An example
+configuration is provided in [`examples/waybar-config.jsonc`](examples/waybar-config.jsonc):
+
+![waybar.png](https://github.com/user-attachments/assets/f60e2ef8-37d6-4bb1-8d0e-f557423d1576)
+
+```jsonc
+"custom/keywisp": {
+  "exec": "keywisp --stdout --stdout-history 5 --stdout-emit-clear -t 2000",
+  "format": "󰌌  {}",
+  "hide-empty-text": true,
+  "restart-interval": 3,
+  "tooltip": false
+}
 ```
 
 ## License
