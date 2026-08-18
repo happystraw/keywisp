@@ -103,6 +103,10 @@ configuration is provided in [`examples/waybar-config.jsonc`](examples/waybar-co
 }
 ```
 
+## Acknowledgments
+
+Keywisp was inspired by [DreamMaoMao/wshowkeys](https://github.com/DreamMaoMao/wshowkeys).
+
 ## License
 
 Keywisp is available under the [MIT License](LICENSE).
