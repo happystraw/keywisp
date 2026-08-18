@@ -24,6 +24,14 @@ Build-only dependency:
 
 ## Install
 
+### Arch Linux (AUR)
+
+```sh
+yay -S keywisp-git
+```
+
+### Build from source
+
 ```sh
 zig build -Doptimize=ReleaseSafe --prefix ~/.local
 ```
