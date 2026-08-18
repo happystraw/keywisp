@@ -22,7 +22,10 @@ pub const InitError = Model.InitError;
 pub fn init(gpa: Allocator, writer: *std.Io.Writer, options: Options) InitError!Writer {
     return .{
         .writer = writer,
-        .model = try .init(gpa, .{ .capacity = options.history }),
+        .model = try .init(gpa, .{
+            .capacity = options.history,
+            .collapse_repetitions = false,
+        }),
         .options = options,
     };
 }
@@ -45,7 +48,7 @@ fn emitUpdate(self: *Writer, change: Model.Change) Error!void {
         if (!first) try self.writer.writeAll(" ");
         first = false;
         var buffer: format.Buffer = undefined;
-        const text = try format.entry(entry, &buffer, .{ .show_repetition = false });
+        const text = try format.entry(entry, &buffer);
         try self.writer.writeAll(text);
     }
     try self.writer.writeAll("\n");
@@ -57,4 +60,24 @@ pub fn clear(self: *Writer) Error!void {
     if (!self.options.emit_clear) return;
     try self.writer.writeAll("\n");
     try self.writer.flush();
+}
+
+test "writes repeated inputs without collapsing them" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+
+    var writer = try Writer.init(std.testing.allocator, &output.writer, .{ .history = 3 });
+    defer writer.deinit();
+
+    for (0..4) |_| {
+        try writer.handle(.{ .pointer = .{ .scroll = .up } });
+    }
+
+    try std.testing.expectEqualStrings(
+        "[↑]\n" ++
+            "[↑] [↑]\n" ++
+            "[↑] [↑] [↑]\n" ++
+            "[↑] [↑] [↑]\n",
+        output.writer.buffered(),
+    );
 }

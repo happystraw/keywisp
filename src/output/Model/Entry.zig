@@ -1,7 +1,9 @@
-const Entry = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+
 const Modifiers = @import("Modifiers.zig");
+
+const Entry = @This();
 
 modifiers: Modifiers,
 name: []const u8,

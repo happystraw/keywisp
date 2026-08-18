@@ -197,7 +197,7 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
         while (key < end) : (key += 1) {
             const entry = options.keys.at(key);
             var display_buf: format.Buffer = undefined;
-            const display_text = try format.entry(entry, &display_buf, .{});
+            const display_text = try format.entry(entry, &display_buf);
             const text_metrics = pango.text.measure(measure_cairo, style.font, display_text) catch return error.TextFailed;
             const width = layout.keyWidth(text_metrics);
             const y = layout.panel_padding;
@@ -287,7 +287,7 @@ const drawing = struct {
 const metrics = struct {
     fn entry(cairo: *Cairo, font: [:0]const u8, value: *const Entry) (format.Error || error{TextFailed})!pango.Metrics {
         var display_buf: format.Buffer = undefined;
-        const display_text = try format.entry(value, &display_buf, .{});
+        const display_text = try format.entry(value, &display_buf);
         return pango.text.measure(cairo, font, display_text) catch error.TextFailed;
     }
 };

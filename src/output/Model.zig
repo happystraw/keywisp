@@ -9,6 +9,8 @@ const Keyboard = @import("Model/Keyboard.zig");
 pub const Keymap = Keyboard.Keymap;
 pub const Modifiers = @import("Model/Modifiers.zig");
 
+const repetition_threshold = 3;
+
 const Model = @This();
 
 entries: []Entry,
@@ -16,6 +18,7 @@ start: usize = 0,
 len: usize = 0,
 modifiers: Modifiers = .{},
 repetition: usize = 0,
+collapse_repetitions: bool,
 
 keyboard: Keyboard,
 gpa: Allocator,
@@ -24,6 +27,7 @@ pub const Change = enum { none, changed };
 pub const Options = struct {
     capacity: usize = 64,
     keymap: Keymap = .environment,
+    collapse_repetitions: bool = true,
 };
 
 pub const InitError = Allocator.Error || Keyboard.InitError || error{InvalidCapacity};
@@ -66,6 +70,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!Model {
     errdefer keyboard.deinit();
     return .{
         .entries = try gpa.alloc(Entry, options.capacity),
+        .collapse_repetitions = options.collapse_repetitions,
         .keyboard = keyboard,
         .gpa = gpa,
     };
@@ -162,11 +167,16 @@ pub fn handle(self: *Model, event: protocol.Event) Allocator.Error!Change {
 }
 
 fn record(self: *Model, name: []const u8, text: []const u8) Allocator.Error!Change {
+    if (!self.collapse_repetitions) {
+        self.append(try Entry.init(self.gpa, self.modifiers, name, text));
+        return .changed;
+    }
+
     if (self.last()) |last_entry| {
         if (last_entry.sameInput(self.modifiers, name, text)) {
             self.repetition += 1;
-            if (self.repetition > 3) {
-                last_entry.repetition = self.repetition - 2;
+            if (self.repetition > repetition_threshold) {
+                last_entry.repetition = self.repetition - repetition_threshold + 1;
                 return .changed;
             }
         } else {
@@ -177,4 +187,25 @@ fn record(self: *Model, name: []const u8, text: []const u8) Allocator.Error!Chan
     }
     self.append(try Entry.init(self.gpa, self.modifiers, name, text));
     return .changed;
+}
+
+test "preserves repeated inputs when repetition collapsing is disabled" {
+    var model = try Model.init(std.testing.allocator, .{
+        .capacity = 3,
+        .collapse_repetitions = false,
+    });
+    defer model.deinit();
+
+    for (0..4) |_| {
+        try std.testing.expectEqual(Change.changed, try model.record("d", "d"));
+    }
+
+    const entries = model.view();
+    try std.testing.expectEqual(@as(usize, 3), entries.len());
+    for (0..entries.len()) |index| {
+        const entry = entries.at(index);
+        try std.testing.expectEqualStrings("d", entry.name);
+        try std.testing.expectEqualStrings("d", entry.text);
+        try std.testing.expectEqual(@as(usize, 1), entry.repetition);
+    }
 }

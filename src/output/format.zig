@@ -5,9 +5,6 @@ const Entry = @import("Model/Entry.zig");
 const buffer_capacity = 512;
 pub const Buffer = [buffer_capacity:0]u8;
 pub const Error = error{NoSpaceLeft};
-pub const Options = struct {
-    show_repetition: bool = true,
-};
 
 const labels = std.StaticStringMap([]const u8).initComptime(.{
     .{ "Return", "↵" },
@@ -57,7 +54,7 @@ fn label(name: []const u8) []const u8 {
     return labels.get(name) orelse name;
 }
 
-pub fn entry(value: *const Entry, buffer: []u8, options: Options) Error![:0]const u8 {
+pub fn entry(value: *const Entry, buffer: []u8) Error![:0]const u8 {
     var used: usize = 0;
     var modifiers = value.modifiers.iterator();
     while (modifiers.next()) |name| {
@@ -72,7 +69,7 @@ pub fn entry(value: *const Entry, buffer: []u8, options: Options) Error![:0]cons
         try append(buffer, &used, shown);
     }
 
-    if (options.show_repetition and value.repetition > 1) {
+    if (value.repetition > 1) {
         try append(buffer, &used, "ₓ");
         var count_buffer: [32]u8 = undefined;
         const digits = std.fmt.bufPrint(&count_buffer, "{d}", .{value.repetition}) catch unreachable;
