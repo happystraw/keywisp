@@ -442,7 +442,7 @@ test "short options" {
         .run => |options| options,
         else => return error.UnexpectedResult,
     };
-    try std.testing.expectEqual(@as(i32, 250), options.app.timeout_ms);
+    try std.testing.expectEqual(250, options.app.timeout_ms);
     try std.testing.expect(options.app.pointer.buttons);
     try std.testing.expect(options.app.pointer.scroll);
     const appearance = switch (options.output) {
@@ -450,9 +450,9 @@ test "short options" {
         .writer => return error.UnexpectedBackend,
     };
     try std.testing.expectEqual(Position.center, appearance.position);
-    try std.testing.expectEqual(@as(i32, 8), appearance.margin);
+    try std.testing.expectEqual(8, appearance.margin);
     try std.testing.expectEqualStrings("Sans 14", appearance.style.font);
-    try std.testing.expectEqual(@as(i32, 480), appearance.style.max_width);
+    try std.testing.expectEqual(480, appearance.style.max_width);
 
     const stdout = switch (parse(.{ .vector = &.{ "test-cli", "-s" } })) {
         .run => |run_options| run_options,
@@ -504,16 +504,16 @@ test "Wayland options override the selected theme" {
     };
     try std.testing.expectEqual(Color.rgba(0x123456FF), appearance.style.panel_background);
     try std.testing.expectEqual(Color.rgba(0xABCDEF80), appearance.style.panel_border_color);
-    try std.testing.expectEqual(@as(u8, 0x12), appearance.style.panel_background.r);
-    try std.testing.expectEqual(@as(u8, 0x34), appearance.style.panel_background.g);
-    try std.testing.expectEqual(@as(u8, 0x56), appearance.style.panel_background.b);
-    try std.testing.expectEqual(@as(u8, 0xFF), appearance.style.panel_background.a);
+    try std.testing.expectEqual(0x12, appearance.style.panel_background.r);
+    try std.testing.expectEqual(0x34, appearance.style.panel_background.g);
+    try std.testing.expectEqual(0x56, appearance.style.panel_background.b);
+    try std.testing.expectEqual(0xFF, appearance.style.panel_background.a);
     try std.testing.expectEqual(WaylandOptions.themed(.light).style.text_color, appearance.style.text_color);
     try std.testing.expectEqual(Position.top_right, appearance.position);
-    try std.testing.expectEqual(@as(?i32, 8), appearance.style.panel_padding);
-    try std.testing.expectEqual(@as(?i32, 10), appearance.style.key_padding_horizontal);
-    try std.testing.expectEqual(@as(?i32, 5), appearance.style.key_padding_vertical);
-    try std.testing.expectEqual(@as(?i32, 4), appearance.style.key_gap);
+    try std.testing.expectEqual(8, appearance.style.panel_padding);
+    try std.testing.expectEqual(10, appearance.style.key_padding_horizontal);
+    try std.testing.expectEqual(5, appearance.style.key_padding_vertical);
+    try std.testing.expectEqual(4, appearance.style.key_gap);
 }
 
 test "stdout options may precede stdout" {
@@ -533,7 +533,7 @@ test "stdout options may precede stdout" {
     switch (options.output) {
         .wayland => return error.UnexpectedBackend,
         .writer => |writer| {
-            try std.testing.expectEqual(@as(usize, 3), writer.history);
+            try std.testing.expectEqual(3, writer.history);
             try std.testing.expect(writer.emit_clear);
         },
     }
@@ -555,7 +555,7 @@ test "integer boundaries" {
         .run => |run_options| run_options,
         else => return error.UnexpectedResult,
     };
-    try std.testing.expectEqual(@as(i32, 0), no_timeout.app.timeout_ms);
+    try std.testing.expectEqual(0, no_timeout.app.timeout_ms);
 
     inline for (.{
         .{ "--timeout", "-1" },

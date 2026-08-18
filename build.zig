@@ -86,11 +86,27 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_cmd.addArgs(args);
     b.step("run", b.fmt("Run {s}", .{project_name})).dependOn(&run_cmd.step);
 
+    addTests(b, exe_mod, input_mod, output_mod);
+    addExamples(b, options, input_mod, output_mod);
+}
+
+fn addTests(b: *std.Build, exe_mod: *std.Build.Module, input_mod: *std.Build.Module, output_mod: *std.Build.Module) void {
+    const test_step = b.step("test", "Run all tests");
+
     const exe_tests = b.addTest(.{ .root_module = exe_mod, .use_llvm = true });
     const run_exe_tests = b.addRunArtifact(exe_tests);
-    b.step("test", "Run tests").dependOn(&run_exe_tests.step);
+    b.step("test-exe", "Run executable tests").dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_exe_tests.step);
 
-    addExamples(b, options, input_mod, output_mod);
+    const input_tests = b.addTest(.{ .root_module = input_mod, .use_llvm = true });
+    const run_input_tests = b.addRunArtifact(input_tests);
+    b.step("test-input", "Run input tests").dependOn(&run_input_tests.step);
+    test_step.dependOn(&run_input_tests.step);
+
+    const output_tests = b.addTest(.{ .root_module = output_mod, .use_llvm = true });
+    const run_output_tests = b.addRunArtifact(output_tests);
+    b.step("test-output", "Run output tests").dependOn(&run_output_tests.step);
+    test_step.dependOn(&run_output_tests.step);
 }
 
 fn addExamples(b: *std.Build, options: Options, input_mod: *std.Build.Module, output_mod: *std.Build.Module) void {

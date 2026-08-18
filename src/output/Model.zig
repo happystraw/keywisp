@@ -201,11 +201,11 @@ test "preserves repeated inputs when repetition collapsing is disabled" {
     }
 
     const entries = model.view();
-    try std.testing.expectEqual(@as(usize, 3), entries.len());
+    try std.testing.expectEqual(3, entries.len());
     for (0..entries.len()) |index| {
         const entry = entries.at(index);
         try std.testing.expectEqualStrings("d", entry.name);
         try std.testing.expectEqualStrings("d", entry.text);
-        try std.testing.expectEqual(@as(usize, 1), entry.repetition);
+        try std.testing.expectEqual(1, entry.repetition);
     }
 }
