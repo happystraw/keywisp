@@ -6,7 +6,7 @@ A small Wayland keystroke visualizer.
 
 ## Dependencies
 
-- Zig 0.16.0
+- Zig 0.17.0 (for 0.16.0, see tag `0.1.1`)
 - a Wayland compositor with `wlr-layer-shell-unstable-v1`.
 
 System dependencies:

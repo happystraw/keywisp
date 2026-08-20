@@ -7,7 +7,7 @@ const project_name = @tagName(manifest.name);
 
 const Options = struct {
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 };
 
 pub fn build(b: *std.Build) void {
@@ -77,13 +77,12 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = project_name,
         .root_module = exe_mod,
-        .use_llvm = if (options.optimize == .Debug) true else null,
     });
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
     b.step("run", b.fmt("Run {s}", .{project_name})).dependOn(&run_cmd.step);
 
     addTests(b, exe_mod, input_mod, output_mod);
@@ -136,7 +135,7 @@ fn addExamples(b: *std.Build, options: Options, input_mod: *std.Build.Module, ou
         b.step(b.fmt("example-{s}", .{example.name}), example.description).dependOn(&install.step);
 
         const run = b.addRunArtifact(exe);
-        if (b.args) |args| run.addArgs(args);
+        run.addPassthruArgs();
         b.step(b.fmt("run-example-{s}", .{example.name}), b.fmt("Run the {s} example", .{example.name})).dependOn(&run.step);
     }
 }
