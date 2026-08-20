@@ -2,11 +2,11 @@
     .name = .keywisp,
     .version = "0.1.0",
     .fingerprint = 0x5ddfe8b55aa71914,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0-dev.1818+7051f8e73",
     .dependencies = .{
         .wayland = .{
-            .url = "https://codeberg.org/ifreund/zig-wayland/archive/v0.6.0.tar.gz",
-            .hash = "wayland-0.6.0-lQa1kqz8AQADQmdNJsNhLoNHcnEGEUjrOaPV-dtEnEmX",
+            .url = "git+https://codeberg.org/ifreund/zig-wayland?ref=next-zig#3b5004a124b399839865f28ae99425a2dd4815f3",
+            .hash = "wayland-0.7.0-dev-lQa1kvr8AQA1T2WbWSm95e1hfefbeHJJ_-5ApPLYx8ni",
         },
     },
     .paths = .{
