@@ -17,6 +17,7 @@ pub const InitError = Allocator.Error || EventError || error{
     ConnectFailed,
     GetRegistryFailed,
     MissingInterfaces,
+    LayerShellNotAdvertised,
     MissingKeyboard,
     MissingKeymap,
     RoundtripFailed,
@@ -53,11 +54,10 @@ pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client
         .outputs = .init(gpa),
         .layer = undefined,
     };
-    errdefer self.outputs.deinit();
-    errdefer if (self.keymap) |keymap| gpa.free(keymap);
-
     self.display = wl.Display.connect(null) catch return error.ConnectFailed;
     errdefer self.display.disconnect();
+    errdefer self.outputs.deinit();
+    errdefer if (self.keymap) |keymap| gpa.free(keymap);
 
     self.registry = self.display.getRegistry() catch return error.GetRegistryFailed;
     errdefer self.registry.destroy();
@@ -65,8 +65,9 @@ pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client
     if (self.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
 
     if (self.event_error) |err| return err;
-    if (self.compositor == null or self.shm == null or self.seat == null or self.layer_shell == null)
+    if (self.compositor == null or self.shm == null or self.seat == null)
         return error.MissingInterfaces;
+    if (self.layer_shell == null) return error.LayerShellNotAdvertised;
 
     errdefer self.releaseSeat();
     _ = self.seat.?.setListener(*Client, listeners.seat, self);
