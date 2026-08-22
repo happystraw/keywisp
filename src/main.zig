@@ -35,9 +35,10 @@ pub fn main(init: std.process.Init) !void {
     };
 
     if (!hasReadableInputDevice(io, "/dev/input")) {
-        log.err("Cannot access /dev/input. Ensure you are in the 'input' group:", .{});
+        log.err("No readable input event device found under /dev/input.", .{});
+        log.err("Ensure you are in the 'input' group:", .{});
         log.err("  sudo usermod -aG input $USER   (then log out and back in)", .{});
-        return error.InputUnavailable;
+        return error.InputDeviceUnavailable;
     }
 
     switch (options.output) {
@@ -46,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
             defer app.deinit();
             app.run() catch |err| {
                 // The compositor closed our layer surface; shut down cleanly.
-                if (err == error.SurfaceClosed) return;
+                if (err == error.LayerSurfaceClosed) return;
                 return err;
             };
         },

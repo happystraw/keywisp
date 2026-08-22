@@ -12,15 +12,6 @@ const Cairo = @import("cairo.zig").Cairo;
 
 const ShmBuffer = @This();
 
-pub const InitError = error{
-    ShmFileFailed,
-    TruncateFailed,
-    MmapFailed,
-    PoolFailed,
-    BufferFailed,
-    CairoFailed,
-};
-
 buffer: *wl.Buffer,
 surface: *Cairo.Surface,
 cairo: *Cairo,
@@ -28,36 +19,37 @@ data: []align(std.heap.page_size_min) u8,
 width: i32,
 height: i32,
 
+pub const InitError = std.posix.MemFdCreateError || std.posix.MMapError || ResizeError || Cairo.CreateError || error{BufferSizeOverflow};
 pub fn init(shm: *wl.Shm, width: i32, height: i32, format: wl.Shm.Format) InitError!ShmBuffer {
     std.debug.assert(width > 0 and height > 0);
-    const stride = std.math.mul(i32, width, 4) catch return error.BufferFailed;
-    const size = std.math.mul(i32, stride, height) catch return error.BufferFailed;
+    const stride = std.math.mul(i32, width, 4) catch return error.BufferSizeOverflow;
+    const size = std.math.mul(i32, stride, height) catch return error.BufferSizeOverflow;
 
-    const fd = std.posix.memfd_create(project.name, std.posix.MFD.CLOEXEC) catch return error.ShmFileFailed;
+    const fd = try std.posix.memfd_create(project.name, std.posix.MFD.CLOEXEC);
     defer _ = system.close(fd);
 
-    if (std.posix.errno(system.ftruncate(fd, @intCast(size))) != .SUCCESS) return error.TruncateFailed;
+    try resize(fd, size);
 
-    const data = std.posix.mmap(
+    const data = try std.posix.mmap(
         null,
         @intCast(size),
         .{ .READ = true, .WRITE = true },
         .{ .TYPE = .SHARED },
         fd,
         0,
-    ) catch return error.MmapFailed;
+    );
     errdefer std.posix.munmap(data);
 
-    const pool = shm.createPool(fd, size) catch return error.PoolFailed;
+    const pool = try shm.createPool(fd, size);
     defer pool.destroy();
 
-    const buffer = pool.createBuffer(0, width, height, stride, format) catch return error.BufferFailed;
+    const buffer = try pool.createBuffer(0, width, height, stride, format);
     errdefer buffer.destroy();
 
-    const surface = Cairo.Surface.image(data.ptr, .argb32, width, height, stride) catch return error.CairoFailed;
+    const surface = try Cairo.Surface.image(data.ptr, .argb32, width, height, stride);
     errdefer surface.destroy();
 
-    const cairo = Cairo.create(surface) catch return error.CairoFailed;
+    const cairo = try Cairo.create(surface);
 
     return .{
         .buffer = buffer,
@@ -66,6 +58,18 @@ pub fn init(shm: *wl.Shm, width: i32, height: i32, format: wl.Shm.Format) InitEr
         .data = data,
         .width = width,
         .height = height,
+    };
+}
+
+const ResizeError = std.mem.Allocator.Error || error{ NoSpaceLeft, SharedMemoryResizeFailed };
+fn resize(fd: std.posix.fd_t, size: i32) ResizeError!void {
+    while (true) switch (std.posix.errno(system.ftruncate(fd, @intCast(size)))) {
+        .SUCCESS => return,
+        .INTR => {},
+        .NOSPC => return error.NoSpaceLeft,
+        .NOMEM => return error.OutOfMemory,
+        .BADF => unreachable,
+        else => return error.SharedMemoryResizeFailed,
     };
 }
 

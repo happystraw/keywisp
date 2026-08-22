@@ -18,8 +18,7 @@ pub const Options = struct {
     emit_clear: bool = false,
 };
 
-pub const InitError = Model.InitError;
-pub fn init(gpa: Allocator, writer: *std.Io.Writer, options: Options) InitError!Writer {
+pub fn init(gpa: Allocator, writer: *std.Io.Writer, options: Options) !Writer {
     return .{
         .writer = writer,
         .model = try .init(gpa, .{
@@ -34,12 +33,11 @@ pub fn deinit(self: *Writer) void {
     self.model.deinit();
 }
 
-pub const Error = Allocator.Error || std.Io.Writer.Error || format.Error;
-pub fn handle(self: *Writer, event: protocol.Event) Error!void {
+pub fn handle(self: *Writer, event: protocol.Event) !void {
     try self.emitUpdate(try self.model.handle(event));
 }
 
-fn emitUpdate(self: *Writer, change: Model.Change) Error!void {
+fn emitUpdate(self: *Writer, change: Model.Change) !void {
     if (change != .changed) return;
 
     var entries = self.model.view().iterator();
@@ -55,7 +53,7 @@ fn emitUpdate(self: *Writer, change: Model.Change) Error!void {
     try self.writer.flush();
 }
 
-pub fn clear(self: *Writer) Error!void {
+pub fn clear(self: *Writer) !void {
     self.model.clear();
     if (!self.options.emit_clear) return;
     try self.writer.writeAll("\n");

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const log = std.log;
 
 const protocol = @import("protocol");
 
@@ -12,14 +13,12 @@ const Wayland = @This();
 
 pub const Appearance = @import("Wayland/Appearance.zig");
 
-pub const InitError = Client.InitError || Model.InitError;
-
 model: Model,
 client: *Client,
 renderer: Renderer,
 flush_pending: bool,
 
-pub fn init(gpa: Allocator, appearance: Appearance) InitError!Wayland {
+pub fn init(gpa: Allocator, appearance: Appearance) !Wayland {
     const client = try Client.create(gpa, appearance.position, appearance.margin);
     errdefer client.destroy();
     var model = try Model.init(gpa, .{ .keymap = .{ .serialized = client.serializedKeymap() } });
@@ -69,11 +68,12 @@ pub fn needsFlush(self: *const Wayland) bool {
     return self.flush_pending;
 }
 
-pub fn flush(self: *Wayland) !void {
+pub const FlushError = error{WaylandFlushFailed};
+pub fn flush(self: *Wayland) FlushError!void {
     switch (self.client.display.flush()) {
         .SUCCESS => self.flush_pending = false,
         .AGAIN => self.flush_pending = true,
-        else => return error.FlushFailed,
+        else => return error.WaylandFlushFailed,
     }
 }
 

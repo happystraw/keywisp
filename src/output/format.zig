@@ -4,7 +4,7 @@ const Entry = @import("Model/Entry.zig");
 
 const buffer_capacity = 512;
 pub const Buffer = [buffer_capacity:0]u8;
-pub const Error = error{NoSpaceLeft};
+pub const Error = error{FormattedEntryTooLong};
 
 const labels = std.StaticStringMap([]const u8).initComptime(.{
     .{ "Return", "↵" },
@@ -82,7 +82,7 @@ pub fn entry(value: *const Entry, buffer: []u8) Error![:0]const u8 {
 
 fn append(buffer: []u8, used: *usize, value: []const u8) Error!void {
     const available = buffer.len - used.* - 1;
-    if (value.len > available) return error.NoSpaceLeft;
+    if (value.len > available) return error.FormattedEntryTooLong;
     @memcpy(buffer[used.* .. used.* + value.len], value);
     used.* += value.len;
 }

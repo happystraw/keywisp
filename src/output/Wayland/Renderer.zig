@@ -49,8 +49,6 @@ const Layout = struct {
     }
 };
 
-pub const RenderError = Allocator.Error || ShmBuffer.InitError || format.Error || error{ CairoFailed, TextFailed };
-
 pub const Options = struct {
     keys: Model.View,
     scale: i32,
@@ -109,19 +107,20 @@ pub fn reap(self: *Renderer) void {
     }
 }
 
+pub const RenderError = ShmBuffer.InitError || Cairo.CreateError || format.Error || error{TextRenderingFailed};
 pub fn render(self: *Renderer, options: Options) RenderError!void {
     const style = self.style;
     const target = self.target;
     const scale = if (options.scale > 0) options.scale else 1;
 
     // 1. Measure the content in logical pixels.
-    const measure_surface = Cairo.Surface.recording(.color_alpha, null) catch return error.CairoFailed;
+    const measure_surface = try Cairo.Surface.recording(.color_alpha, null);
     defer measure_surface.destroy();
-    const measure_cairo = Cairo.create(measure_surface) catch return error.CairoFailed;
+    const measure_cairo = try Cairo.create(measure_surface);
     defer measure_cairo.destroy();
     try drawing.setup(measure_cairo, scale, options.subpixel);
 
-    const font_metrics = pango.text.measure(measure_cairo, style.font, "yT") catch return error.TextFailed;
+    const font_metrics = pango.text.measure(measure_cairo, style.font, "yT") catch return error.TextRenderingFailed;
     const layout = Layout.init(font_metrics.height, style);
 
     const end = options.keys.len();
@@ -150,8 +149,8 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
 
     const new_w: u32 = @intCast(bounds.width);
     const new_h: u32 = @intCast(bounds.height);
-    const buffer_width = std.math.mul(i32, bounds.width, scale) catch return error.BufferFailed;
-    const buffer_height = std.math.mul(i32, bounds.height, scale) catch return error.BufferFailed;
+    const buffer_width = std.math.mul(i32, bounds.width, scale) catch return error.BufferSizeOverflow;
+    const buffer_height = std.math.mul(i32, bounds.height, scale) catch return error.BufferSizeOverflow;
 
     // 2. Size changed → request a new layer surface size
     if (new_w != target.width or new_h != target.height) {
@@ -198,7 +197,8 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
             const entry = options.keys.at(key);
             var display_buf: format.Buffer = undefined;
             const display_text = try format.entry(entry, &display_buf);
-            const text_metrics = pango.text.measure(measure_cairo, style.font, display_text) catch return error.TextFailed;
+            const text_metrics = pango.text.measure(measure_cairo, style.font, display_text) catch
+                return error.TextRenderingFailed;
             const width = layout.keyWidth(text_metrics);
             const y = layout.panel_padding;
 
@@ -218,7 +218,7 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
                 @floatFromInt(x + @divTrunc(width - text_metrics.width, 2)),
                 @floatFromInt(y + layout.key_padding_vertical + font_metrics.baseline - text_metrics.baseline),
             );
-            pango.text.draw(buffer_cairo, style.font, display_text) catch return error.TextFailed;
+            pango.text.draw(buffer_cairo, style.font, display_text) catch return error.TextRenderingFailed;
 
             x += width + layout.key_gap;
         }
@@ -271,11 +271,15 @@ const drawing = struct {
         );
     }
 
-    fn setup(cairo: *Cairo, scale: i32, subpixel: Cairo.SubpixelOrder) error{CairoFailed}!void {
+    fn setup(
+        cairo: *Cairo,
+        scale: i32,
+        subpixel: Cairo.SubpixelOrder,
+    ) !void {
         const factor: f64 = @floatFromInt(scale);
         cairo.scale(factor, factor);
         cairo.setAntialias(.best);
-        const fo = Cairo.FontOptions.create() catch return error.CairoFailed;
+        const fo = try Cairo.FontOptions.create();
         defer fo.destroy();
         fo.setHintStyle(.full);
         fo.setAntialias(.subpixel);
@@ -285,9 +289,13 @@ const drawing = struct {
 };
 
 const metrics = struct {
-    fn entry(cairo: *Cairo, font: [:0]const u8, value: *const Entry) (format.Error || error{TextFailed})!pango.Metrics {
+    fn entry(
+        cairo: *Cairo,
+        font: [:0]const u8,
+        value: *const Entry,
+    ) (format.Error || error{TextRenderingFailed})!pango.Metrics {
         var display_buf: format.Buffer = undefined;
         const display_text = try format.entry(value, &display_buf);
-        return pango.text.measure(cairo, font, display_text) catch error.TextFailed;
+        return pango.text.measure(cairo, font, display_text) catch error.TextRenderingFailed;
     }
 };

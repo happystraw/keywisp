@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const Cairo = opaque {
     pub const Operator = enum(c_int) { clear = 0, source = 1, _ };
     pub const Antialias = enum(c_int) { subpixel = 3, best = 6, _ };
@@ -5,7 +7,20 @@ pub const Cairo = opaque {
     pub const SubpixelOrder = enum(c_int) { default = 0, rgb = 1, bgr = 2, vrgb = 3, vbgr = 4, _ };
     pub const Content = enum(c_int) { color_alpha = 0x3000, _ };
     pub const Format = enum(c_int) { argb32 = 0, _ };
-    pub const Status = enum(c_int) { success = 0, _ };
+    pub const CreateError = std.mem.Allocator.Error || error{CairoInitializationFailed};
+    pub const Status = enum(c_int) {
+        success = 0,
+        no_memory = 1,
+        _,
+
+        fn toError(self: Status) ?CreateError {
+            return switch (self) {
+                .success => null,
+                .no_memory => error.OutOfMemory,
+                else => error.CairoInitializationFailed,
+            };
+        }
+    };
 
     pub const Rectangle = extern struct { x: f64, y: f64, width: f64, height: f64 };
 
@@ -13,35 +28,27 @@ pub const Cairo = opaque {
         pub const destroy = ffi.cairo.cairo_surface_destroy;
         pub const status = ffi.cairo.cairo_surface_status;
 
-        pub const CreateError = error{CreateFailed};
-        pub fn recording(content: Content, extents: ?*const Rectangle) Surface.CreateError!*Surface {
+        pub fn recording(content: Content, extents: ?*const Rectangle) CreateError!*Surface {
             const surface = ffi.cairo.cairo_recording_surface_create(content, extents);
-            if (surface.status() != .success) {
-                surface.destroy();
-                return error.CreateFailed;
-            }
-            return surface;
+            const err = surface.status().toError() orelse return surface;
+            surface.destroy();
+            return err;
         }
 
-        pub fn image(data: [*]u8, format: Format, width: i32, height: i32, stride: i32) Surface.CreateError!*Surface {
+        pub fn image(data: [*]u8, format: Format, width: i32, height: i32, stride: i32) CreateError!*Surface {
             const surface = ffi.cairo.cairo_image_surface_create_for_data(data, format, width, height, stride);
-            if (surface.status() != .success) {
-                surface.destroy();
-                return error.CreateFailed;
-            }
-            return surface;
+            const err = surface.status().toError() orelse return surface;
+            surface.destroy();
+            return err;
         }
     };
 
     pub const FontOptions = opaque {
-        pub const CreateError = error{CreateFailed};
-        pub fn create() FontOptions.CreateError!*FontOptions {
+        pub fn create() CreateError!*FontOptions {
             const options = ffi.cairo.cairo_font_options_create();
-            if (ffi.cairo.cairo_font_options_status(options) != .success) {
-                ffi.cairo.cairo_font_options_destroy(options);
-                return error.CreateFailed;
-            }
-            return options;
+            const err = ffi.cairo.cairo_font_options_status(options).toError() orelse return options;
+            ffi.cairo.cairo_font_options_destroy(options);
+            return err;
         }
 
         pub const destroy = ffi.cairo.cairo_font_options_destroy;
@@ -50,14 +57,11 @@ pub const Cairo = opaque {
         pub const setSubpixelOrder = ffi.cairo.cairo_font_options_set_subpixel_order;
     };
 
-    pub const CreateError = error{CreateFailed};
     pub fn create(surface: *Surface) CreateError!*Cairo {
         const cairo = ffi.cairo.cairo_create(surface);
-        if (cairo.status() != .success) {
-            cairo.destroy();
-            return error.CreateFailed;
-        }
-        return cairo;
+        const err = cairo.status().toError() orelse return cairo;
+        cairo.destroy();
+        return err;
     }
     pub const destroy = ffi.cairo.cairo_destroy;
     pub const status = ffi.cairo.cairo_status;

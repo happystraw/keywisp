@@ -30,8 +30,6 @@ pub const Options = struct {
     collapse_repetitions: bool = true,
 };
 
-pub const InitError = Allocator.Error || Keyboard.InitError || error{InvalidCapacity};
-
 pub const View = struct {
     first: []const Entry,
     second: []const Entry,
@@ -64,6 +62,7 @@ pub const View = struct {
     }
 };
 
+pub const InitError = Allocator.Error || Keyboard.InitError || error{InvalidCapacity};
 pub fn init(gpa: Allocator, options: Options) InitError!Model {
     if (options.capacity == 0) return error.InvalidCapacity;
     var keyboard = try Keyboard.init(options.keymap);
@@ -83,7 +82,7 @@ pub fn deinit(self: *Model) void {
     self.* = undefined;
 }
 
-pub fn setSerializedKeymap(self: *Model, text: [:0]const u8) Keyboard.InitError!void {
+pub fn setSerializedKeymap(self: *Model, text: [:0]const u8) !void {
     try self.keyboard.setSerializedKeymap(text);
     self.modifiers = .{};
     self.repetition = 0;

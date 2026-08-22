@@ -14,19 +14,13 @@ layer_surface: *zwlr.LayerSurfaceV1,
 width: u32 = 0,
 height: u32 = 0,
 
-pub const InitError = error{
-    CreateSurfaceFailed,
-    GetLayerSurfaceFailed,
-    CreateInputRegionFailed,
-};
-
 /// Creates an overlay layer surface with an empty input region.
-pub fn init(compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, options: Options) InitError!LayerSurface {
-    const surface = compositor.createSurface() catch return error.CreateSurfaceFailed;
+pub fn init(compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, options: Options) !LayerSurface {
+    const surface = try compositor.createSurface();
     errdefer surface.destroy();
-    const layer_surface = layer_shell.getLayerSurface(surface, null, .overlay, options.namespace.ptr) catch return error.GetLayerSurfaceFailed;
+    const layer_surface = try layer_shell.getLayerSurface(surface, null, .overlay, options.namespace.ptr);
     errdefer layer_surface.destroy();
-    const region = compositor.createRegion() catch return error.CreateInputRegionFailed;
+    const region = try compositor.createRegion();
     surface.setInputRegion(region);
     region.destroy();
     layer_surface.setAnchor(options.anchor);

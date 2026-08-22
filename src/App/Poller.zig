@@ -12,8 +12,6 @@ pub const Ready = struct {
     output_writable: bool = false,
 };
 
-pub const WaitError = posix.PollError || error{InvalidFd};
-
 pub fn init(input_fd: posix.fd_t, output_fd: ?posix.fd_t) Poller {
     var self: Poller = .{
         .pollfds = undefined,
@@ -33,11 +31,13 @@ pub fn setOutputWritable(self: *Poller, enabled: bool) void {
         if (enabled) @as(i16, posix.POLL.OUT) else 0;
 }
 
+pub const WaitError = posix.PollError || error{ InvalidInputFd, InvalidOutputFd };
 pub fn wait(self: *Poller, timeout_ms: i32) WaitError!Ready {
     std.debug.assert(timeout_ms >= -1);
     _ = try posix.poll(self.pollfds[0..self.count], timeout_ms);
-    for (self.pollfds[0..self.count]) |fd| {
-        if ((fd.revents & posix.POLL.NVAL) != 0) return error.InvalidFd;
+    for (self.pollfds[0..self.count], 0..) |fd, index| {
+        if ((fd.revents & posix.POLL.NVAL) != 0)
+            return if (index == 0) error.InvalidInputFd else error.InvalidOutputFd;
     }
 
     return .{

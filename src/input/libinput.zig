@@ -46,19 +46,19 @@ pub const LibInput = opaque {
     };
 
     pub const Options = struct { seat: [:0]const u8 = "seat0", udev: ?*Udev = null };
-    pub const NewError = error{ UdevCreateFailed, ContextCreateFailed, AssignSeatFailed };
+    pub const NewError = error{ UdevCreateFailed, LibinputContextCreateFailed, SeatAssignmentFailed };
     pub fn new(options: Options) NewError!*LibInput {
-        const udev_ctx = options.udev orelse Udev.new() orelse return error.UdevCreateFailed;
+        const udev = options.udev orelse Udev.new() orelse return error.UdevCreateFailed;
         defer if (options.udev == null) {
-            udev_ctx.release();
+            udev.release();
         };
 
-        const context = ffi.libinput.libinput_udev_create_context(&DeviceAccess.interface, null, udev_ctx) orelse
-            return error.ContextCreateFailed;
+        const context = ffi.libinput.libinput_udev_create_context(&DeviceAccess.interface, null, udev) orelse
+            return error.LibinputContextCreateFailed;
         errdefer context.release();
 
         if (ffi.libinput.libinput_udev_assign_seat(context, options.seat.ptr) != 0)
-            return error.AssignSeatFailed;
+            return error.SeatAssignmentFailed;
         return context;
     }
 
@@ -68,9 +68,9 @@ pub const LibInput = opaque {
 
     pub const fd = ffi.libinput.libinput_get_fd;
 
-    pub const DispatchError = error{DispatchFailed};
+    pub const DispatchError = error{LibinputDispatchFailed};
     pub fn dispatch(self: *LibInput) DispatchError!void {
-        if (ffi.libinput.libinput_dispatch(self) != 0) return error.DispatchFailed;
+        if (ffi.libinput.libinput_dispatch(self) != 0) return error.LibinputDispatchFailed;
     }
 
     pub fn next(self: *LibInput) ?protocol.Event {

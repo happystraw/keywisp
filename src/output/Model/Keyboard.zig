@@ -13,18 +13,18 @@ pub const Keymap = union(enum) {
     serialized: [:0]const u8,
 };
 
-pub const InitError = error{ ContextFailed, KeymapFailed, StateFailed };
+pub const InitError = error{ XkbContextCreateFailed, XkbKeymapCompileFailed, XkbStateCreateFailed };
 pub fn init(options: Keymap) InitError!Keyboard {
-    const context = xkb.Context.new(.no_flags) orelse return error.ContextFailed;
+    const context = xkb.Context.new(.no_flags) orelse return error.XkbContextCreateFailed;
     errdefer context.unref();
 
     const keymap = switch (options) {
         .environment => xkb.Keymap.newFromNames(context, null, .no_flags),
         .serialized => |keymap_text| createFromSerialized(context, keymap_text),
-    } orelse return error.KeymapFailed;
+    } orelse return error.XkbKeymapCompileFailed;
     errdefer keymap.unref();
 
-    const state = xkb.State.new(keymap) orelse return error.StateFailed;
+    const state = xkb.State.new(keymap) orelse return error.XkbStateCreateFailed;
     return .{ .context = context, .keymap = keymap, .state = state };
 }
 
@@ -35,10 +35,11 @@ pub fn deinit(self: *Keyboard) void {
     self.* = undefined;
 }
 
-pub fn setSerializedKeymap(self: *Keyboard, keymap_text: [:0]const u8) InitError!void {
-    const keymap = createFromSerialized(self.context, keymap_text) orelse return error.KeymapFailed;
+pub const SetKeymapError = error{ XkbKeymapCompileFailed, XkbStateCreateFailed };
+pub fn setSerializedKeymap(self: *Keyboard, keymap_text: [:0]const u8) SetKeymapError!void {
+    const keymap = createFromSerialized(self.context, keymap_text) orelse return error.XkbKeymapCompileFailed;
     errdefer keymap.unref();
-    const state = xkb.State.new(keymap) orelse return error.StateFailed;
+    const state = xkb.State.new(keymap) orelse return error.XkbStateCreateFailed;
 
     self.state.unref();
     self.keymap.unref();

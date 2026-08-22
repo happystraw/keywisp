@@ -15,31 +15,23 @@ const Client = @This();
 
 const State = struct {
     const Changes = struct { keymap: bool = false, render: bool = false };
-    const Error = Allocator.Error || error{
-        UnsupportedCompositorVersion,
-        SurfaceClosed,
-    };
+    const Error = Allocator.Error || error{ UnsupportedCompositorVersion, LayerSurfaceClosed };
 
     err: ?Error = null,
     changes: Changes = .{},
 
     fn fail(self: *State, err: Error) void {
-        if (self.err) |current| {
-            if (current != error.SurfaceClosed) return;
-        }
-        self.err = err;
+        if (self.err == null) self.err = err; // first wins
     }
 
-    fn takeError(self: *State) Error!void {
-        const current = self.err orelse return;
-        self.err = null;
-        return current;
+    fn takeError(self: *State) ?Error {
+        defer self.err = null;
+        return self.err;
     }
 
     fn takeChanges(self: *State) Changes {
-        const changes = self.changes;
-        self.changes = .{};
-        return changes;
+        defer self.changes = .{};
+        return self.changes;
     }
 };
 
@@ -61,13 +53,13 @@ outputs: Outputs,
 layer: LayerSurface,
 
 pub const InitError = RoundtripError || error{
-    ConnectFailed,
-    GetRegistryFailed,
-    MissingInterfaces,
+    WaylandConnectFailed,
+    CompositorNotAdvertised,
+    ShmNotAdvertised,
+    SeatNotAdvertised,
     LayerShellNotAdvertised,
-    MissingKeyboard,
-    MissingKeymap,
-    LayerSurfaceFailed,
+    KeyboardCapabilityUnavailable,
+    KeymapUnavailable,
 };
 
 pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client {
@@ -80,32 +72,33 @@ pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client
         .outputs = .init(gpa),
         .layer = undefined,
     };
-    self.display = wl.Display.connect(null) catch return error.ConnectFailed;
+    self.display = wl.Display.connect(null) catch return error.WaylandConnectFailed;
     errdefer self.display.disconnect();
     errdefer self.outputs.deinit();
     errdefer if (self.keymap) |keymap| gpa.free(keymap);
 
-    self.registry = self.display.getRegistry() catch return error.GetRegistryFailed;
+    self.registry = try self.display.getRegistry();
     errdefer self.registry.destroy();
     _ = self.registry.setListener(*Client, listeners.registry, self);
     try self.roundtrip();
 
-    if (self.compositor == null or self.shm == null or self.seat == null)
-        return error.MissingInterfaces;
+    if (self.compositor == null) return error.CompositorNotAdvertised;
+    if (self.shm == null) return error.ShmNotAdvertised;
+    if (self.seat == null) return error.SeatNotAdvertised;
     if (self.layer_shell == null) return error.LayerShellNotAdvertised;
 
     errdefer self.releaseSeat();
     _ = self.seat.?.setListener(*Client, listeners.seat, self);
     try self.roundtrip();
-    if (self.keyboard == null) return error.MissingKeyboard;
+    if (self.keyboard == null) return error.KeyboardCapabilityUnavailable;
     try self.roundtrip();
-    if (self.keymap == null) return error.MissingKeymap;
+    if (self.keymap == null) return error.KeymapUnavailable;
 
-    self.layer = LayerSurface.init(self.compositor.?, self.layer_shell.?, .{
+    self.layer = try LayerSurface.init(self.compositor.?, self.layer_shell.?, .{
         .anchor = position.anchor(),
         .margin = margin,
         .namespace = project.name ++ "-keys",
-    }) catch return error.LayerSurfaceFailed;
+    });
     errdefer self.layer.deinit();
 
     _ = self.layer.layer_surface.setListener(*Client, listeners.layerSurface, self);
@@ -141,18 +134,23 @@ pub fn takeChanges(self: *Client) State.Changes {
     return self.state.takeChanges();
 }
 
-pub const DispatchError = State.Error || error{DispatchFailed};
+pub const DispatchError = Allocator.Error || error{ LayerSurfaceClosed, WaylandDispatchFailed };
 
 pub fn dispatch(self: *Client) DispatchError!void {
-    if (self.display.dispatch() != .SUCCESS) return error.DispatchFailed;
-    try self.state.takeError();
+    if (self.display.dispatch() != .SUCCESS) return error.WaylandDispatchFailed;
+    const err = self.state.takeError() orelse return;
+    switch (err) {
+        error.UnsupportedCompositorVersion => unreachable,
+        error.OutOfMemory => return error.OutOfMemory,
+        error.LayerSurfaceClosed => return error.LayerSurfaceClosed,
+    }
 }
 
-const RoundtripError = State.Error || error{RoundtripFailed};
+const RoundtripError = State.Error || error{WaylandRoundtripFailed};
 
 fn roundtrip(self: *Client) RoundtripError!void {
-    if (self.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
-    try self.state.takeError();
+    if (self.display.roundtrip() != .SUCCESS) return error.WaylandRoundtripFailed;
+    if (self.state.takeError()) |err| return err;
 }
 
 fn releaseSeat(self: *Client) void {
@@ -186,21 +184,38 @@ const listeners = struct {
                         client.state.fail(error.UnsupportedCompositorVersion);
                         return;
                     };
-                    client.compositor = proxy.bind(ev.name, wl.Compositor, version) catch null;
+                    client.compositor = proxy.bind(ev.name, wl.Compositor, version) catch |err| {
+                        client.state.fail(err);
+                        return;
+                    };
                 } else if (isInterface(ev.interface, wl.Shm)) {
                     if (client.shm != null) return;
                     const version = negotiatedVersion(wl.Shm, ev.version, 1) orelse return;
-                    client.shm = proxy.bind(ev.name, wl.Shm, version) catch null;
+                    client.shm = proxy.bind(ev.name, wl.Shm, version) catch |err| {
+                        client.state.fail(err);
+                        return;
+                    };
                 } else if (isInterface(ev.interface, wl.Seat)) {
                     const version = negotiatedVersion(wl.Seat, ev.version, 1) orelse return;
-                    if (client.seat == null) client.seat = proxy.bind(ev.name, wl.Seat, version) catch null;
+                    if (client.seat == null) {
+                        client.seat = proxy.bind(ev.name, wl.Seat, version) catch |err| {
+                            client.state.fail(err);
+                            return;
+                        };
+                    }
                 } else if (isInterface(ev.interface, zwlr.LayerShellV1)) {
                     if (client.layer_shell != null) return;
                     const version = negotiatedVersion(zwlr.LayerShellV1, ev.version, 1) orelse return;
-                    client.layer_shell = proxy.bind(ev.name, zwlr.LayerShellV1, version) catch null;
+                    client.layer_shell = proxy.bind(ev.name, zwlr.LayerShellV1, version) catch |err| {
+                        client.state.fail(err);
+                        return;
+                    };
                 } else if (isInterface(ev.interface, wl.Output)) {
                     const version = negotiatedVersion(wl.Output, ev.version, 2) orelse return;
-                    const output_proxy = proxy.bind(ev.name, wl.Output, version) catch return;
+                    const output_proxy = proxy.bind(ev.name, wl.Output, version) catch |err| {
+                        client.state.fail(err);
+                        return;
+                    };
                     _ = client.outputs.add(ev.name, output_proxy) catch |err| {
                         Outputs.release(output_proxy);
                         client.state.fail(err);
@@ -254,11 +269,11 @@ const listeners = struct {
     fn updateKeymap(client: *Client, format: wl.Keyboard.KeymapFormat, fd: std.posix.fd_t, size: u32) void {
         defer _ = system.close(fd);
         if (format != .xkb_v1) {
-            log.err("Failed to update keymap: unsupported format {d}.", .{@intFromEnum(format)});
+            log.warn("Failed to update keymap: unsupported format {d}.", .{@intFromEnum(format)});
             return;
         }
         if (size == 0) {
-            log.err("Failed to update keymap: empty keymap.", .{});
+            log.warn("Failed to update keymap: empty keymap.", .{});
             return;
         }
 
@@ -270,13 +285,13 @@ const listeners = struct {
             fd,
             0,
         ) catch |err| {
-            log.err("Failed to update keymap: mmap returned {s}.", .{@errorName(err)});
+            log.warn("Failed to map keymap: {s}.", .{@errorName(err)});
             return;
         };
         defer std.posix.munmap(mapped);
 
         const text = client.gpa.dupeSentinel(u8, mapped[0 .. mapped.len - 1], 0) catch |err| {
-            log.err("Failed to update keymap: {s}.", .{@errorName(err)});
+            log.warn("Failed to copy keymap: {s}.", .{@errorName(err)});
             return;
         };
         if (client.keymap) |old| client.gpa.free(old);
@@ -306,7 +321,7 @@ const listeners = struct {
                 }
                 proxy.ackConfigure(ev.serial);
             },
-            .closed => client.state.fail(error.SurfaceClosed),
+            .closed => client.state.fail(error.LayerSurfaceClosed),
         }
     }
 
