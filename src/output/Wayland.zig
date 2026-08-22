@@ -44,11 +44,11 @@ pub fn fd(self: *const Wayland) c_int {
 pub fn dispatch(self: *Wayland) !void {
     try self.client.dispatch();
     self.renderer.reap();
-    const changes = self.client.takeChanges();
+    const changes = self.client.state.takeChanges();
     if (changes.keymap)
         try self.model.setSerializedKeymap(self.client.serializedKeymap());
     if (changes.render)
-        try render(self);
+        try self.render();
     try self.flush();
 }
 

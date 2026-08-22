@@ -13,9 +13,9 @@ const Position = @import("Appearance.zig").Position;
 
 const Client = @This();
 
-const State = struct {
-    const Changes = struct { keymap: bool = false, render: bool = false };
-    const Error = Allocator.Error || error{ UnsupportedCompositorVersion, LayerSurfaceClosed };
+pub const State = struct {
+    pub const Changes = struct { keymap: bool = false, render: bool = false };
+    pub const Error = Allocator.Error || error{ UnsupportedCompositorVersion, LayerSurfaceClosed };
 
     err: ?Error = null,
     changes: Changes = .{},
@@ -29,7 +29,7 @@ const State = struct {
         return self.err;
     }
 
-    fn takeChanges(self: *State) Changes {
+    pub fn takeChanges(self: *State) Changes {
         defer self.changes = .{};
         return self.changes;
     }
@@ -128,10 +128,6 @@ pub fn subpixel(self: *const Client) wl.Output.Subpixel {
 
 pub fn serializedKeymap(self: *const Client) [:0]const u8 {
     return self.keymap.?;
-}
-
-pub fn takeChanges(self: *Client) State.Changes {
-    return self.state.takeChanges();
 }
 
 pub const DispatchError = Allocator.Error || error{ LayerSurfaceClosed, WaylandDispatchFailed };

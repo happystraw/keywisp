@@ -112,11 +112,13 @@ fn addTests(b: *std.Build, exe_mod: *std.Build.Module, input_mod: *std.Build.Mod
 fn addExamples(b: *std.Build, options: Options, input_mod: *std.Build.Module, output_mod: *std.Build.Module) void {
     const examples = [_]struct {
         name: []const u8,
+        import_name: []const u8,
         dependency: *std.Build.Module,
         description: []const u8,
     }{
-        .{ .name = "input", .dependency = input_mod, .description = "Build the /dev/input example" },
-        .{ .name = "output", .dependency = output_mod, .description = "Build the stdout output example" },
+        .{ .name = "input", .import_name = "input", .dependency = input_mod, .description = "Build the /dev/input example" },
+        .{ .name = "output-writer", .import_name = "output", .dependency = output_mod, .description = "Build the Writer output example" },
+        .{ .name = "output-wayland", .import_name = "output", .dependency = output_mod, .description = "Build the Wayland output example" },
     };
 
     for (examples) |example| {
@@ -125,7 +127,7 @@ fn addExamples(b: *std.Build, options: Options, input_mod: *std.Build.Module, ou
             .target = options.target,
             .optimize = options.optimize,
         });
-        example_mod.addImport(example.name, example.dependency);
+        example_mod.addImport(example.import_name, example.dependency);
 
         const exe = b.addExecutable(.{
             .name = b.fmt("{s}-example", .{example.name}),
