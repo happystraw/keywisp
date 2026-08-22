@@ -43,10 +43,8 @@ pub fn fd(self: *const Wayland) c_int {
 }
 
 pub fn dispatch(self: *Wayland) !void {
-    const display = self.client.display;
-    if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
+    try self.client.dispatch();
     self.renderer.reap();
-    if (self.client.event_error) |err| return err;
     const changes = self.client.takeChanges();
     if (changes.keymap)
         try self.model.setSerializedKeymap(self.client.serializedKeymap());
@@ -95,4 +93,8 @@ fn subpixelToCairo(subpixel: anytype) Cairo.SubpixelOrder {
         .vertical_bgr => .vbgr,
         else => .default,
     };
+}
+
+test {
+    _ = Client;
 }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const log = std.log;
 const system = std.posix.system;
 
 const project = @import("project");
@@ -12,25 +13,40 @@ const Position = @import("Appearance.zig").Position;
 
 const Client = @This();
 
-pub const EventError = error{ UnsupportedInterfaces, OutOfMemory, KeymapFailed, SurfaceClosed };
-pub const InitError = Allocator.Error || EventError || error{
-    ConnectFailed,
-    GetRegistryFailed,
-    MissingInterfaces,
-    LayerShellNotAdvertised,
-    MissingKeyboard,
-    MissingKeymap,
-    RoundtripFailed,
-    LayerSurfaceFailed,
-};
+const State = struct {
+    const Changes = struct { keymap: bool = false, render: bool = false };
+    const Error = Allocator.Error || error{
+        UnsupportedCompositorVersion,
+        SurfaceClosed,
+    };
 
-pub const Changes = struct { keymap: bool = false, render: bool = false };
+    err: ?Error = null,
+    changes: Changes = .{},
+
+    fn fail(self: *State, err: Error) void {
+        if (self.err) |current| {
+            if (current != error.SurfaceClosed) return;
+        }
+        self.err = err;
+    }
+
+    fn takeError(self: *State) Error!void {
+        const current = self.err orelse return;
+        self.err = null;
+        return current;
+    }
+
+    fn takeChanges(self: *State) Changes {
+        const changes = self.changes;
+        self.changes = .{};
+        return changes;
+    }
+};
 
 gpa: Allocator,
 display: *wl.Display,
 registry: *wl.Registry,
-event_error: ?EventError = null,
-pending: Changes = .{},
+state: State = .{},
 
 compositor: ?*wl.Compositor = null,
 shm: ?*wl.Shm = null,
@@ -43,6 +59,16 @@ keymap: ?[:0]u8 = null,
 outputs: Outputs,
 
 layer: LayerSurface,
+
+pub const InitError = RoundtripError || error{
+    ConnectFailed,
+    GetRegistryFailed,
+    MissingInterfaces,
+    LayerShellNotAdvertised,
+    MissingKeyboard,
+    MissingKeymap,
+    LayerSurfaceFailed,
+};
 
 pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client {
     const self = try gpa.create(Client);
@@ -62,19 +88,17 @@ pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client
     self.registry = self.display.getRegistry() catch return error.GetRegistryFailed;
     errdefer self.registry.destroy();
     _ = self.registry.setListener(*Client, listeners.registry, self);
-    if (self.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
+    try self.roundtrip();
 
-    if (self.event_error) |err| return err;
     if (self.compositor == null or self.shm == null or self.seat == null)
         return error.MissingInterfaces;
     if (self.layer_shell == null) return error.LayerShellNotAdvertised;
 
     errdefer self.releaseSeat();
     _ = self.seat.?.setListener(*Client, listeners.seat, self);
-    if (self.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
+    try self.roundtrip();
     if (self.keyboard == null) return error.MissingKeyboard;
-    if (self.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
-    if (self.event_error) |err| return err;
+    try self.roundtrip();
     if (self.keymap == null) return error.MissingKeymap;
 
     self.layer = LayerSurface.init(self.compositor.?, self.layer_shell.?, .{
@@ -86,8 +110,8 @@ pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client
 
     _ = self.layer.layer_surface.setListener(*Client, listeners.layerSurface, self);
     _ = self.layer.surface.setListener(*Client, listeners.surface, self);
-    if (self.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
-    self.pending = .{};
+    try self.roundtrip();
+    self.state.changes = .{};
     return self;
 }
 
@@ -113,21 +137,22 @@ pub fn serializedKeymap(self: *const Client) [:0]const u8 {
     return self.keymap.?;
 }
 
-pub fn takeChanges(self: *Client) Changes {
-    const changes = self.pending;
-    self.pending = .{};
-    return changes;
+pub fn takeChanges(self: *Client) State.Changes {
+    return self.state.takeChanges();
 }
 
-fn fail(self: *Client, err: EventError) void {
-    if (err == error.SurfaceClosed) {
-        self.event_error = err;
-        return;
-    }
-    if (self.event_error) |current| {
-        if (current != error.KeymapFailed) return;
-    }
-    self.event_error = err;
+pub const DispatchError = State.Error || error{DispatchFailed};
+
+pub fn dispatch(self: *Client) DispatchError!void {
+    if (self.display.dispatch() != .SUCCESS) return error.DispatchFailed;
+    try self.state.takeError();
+}
+
+const RoundtripError = State.Error || error{RoundtripFailed};
+
+fn roundtrip(self: *Client) RoundtripError!void {
+    if (self.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
+    try self.state.takeError();
 }
 
 fn releaseSeat(self: *Client) void {
@@ -158,7 +183,7 @@ const listeners = struct {
                 if (isInterface(ev.interface, wl.Compositor)) {
                     if (client.compositor != null) return;
                     const version = negotiatedVersion(wl.Compositor, ev.version, 4) orelse {
-                        client.fail(error.UnsupportedInterfaces);
+                        client.state.fail(error.UnsupportedCompositorVersion);
                         return;
                     };
                     client.compositor = proxy.bind(ev.name, wl.Compositor, version) catch null;
@@ -176,16 +201,16 @@ const listeners = struct {
                 } else if (isInterface(ev.interface, wl.Output)) {
                     const version = negotiatedVersion(wl.Output, ev.version, 2) orelse return;
                     const output_proxy = proxy.bind(ev.name, wl.Output, version) catch return;
-                    _ = client.outputs.add(ev.name, output_proxy) catch {
+                    _ = client.outputs.add(ev.name, output_proxy) catch |err| {
                         Outputs.release(output_proxy);
-                        client.fail(error.OutOfMemory);
+                        client.state.fail(err);
                         return;
                     };
                     _ = output_proxy.setListener(*Client, listeners.output, client);
                 }
             },
             .global_remove => |ev| {
-                if (client.outputs.remove(ev.name)) client.pending.render = true;
+                if (client.outputs.remove(ev.name)) client.state.changes.render = true;
             },
         }
     }
@@ -207,8 +232,8 @@ const listeners = struct {
                     return;
                 }
                 if (client.keyboard != null) return;
-                const keyboard_proxy = proxy.getKeyboard() catch {
-                    client.fail(error.KeymapFailed);
+                const keyboard_proxy = proxy.getKeyboard() catch |err| {
+                    client.state.fail(err);
                     return;
                 };
                 client.keyboard = keyboard_proxy;
@@ -222,14 +247,18 @@ const listeners = struct {
         _ = proxy;
         switch (event) {
             .keymap => |ev| updateKeymap(client, ev.format, ev.fd, ev.size),
-            .enter, .leave, .key, .modifiers, .repeat_info => {},
+            else => {},
         }
     }
 
     fn updateKeymap(client: *Client, format: wl.Keyboard.KeymapFormat, fd: std.posix.fd_t, size: u32) void {
         defer _ = system.close(fd);
-        if (format != .xkb_v1 or size == 0) {
-            client.fail(error.KeymapFailed);
+        if (format != .xkb_v1) {
+            log.err("Failed to update keymap: unsupported format {d}.", .{@intFromEnum(format)});
+            return;
+        }
+        if (size == 0) {
+            log.err("Failed to update keymap: empty keymap.", .{});
             return;
         }
 
@@ -240,32 +269,29 @@ const listeners = struct {
             .{ .TYPE = .PRIVATE },
             fd,
             0,
-        ) catch {
-            client.fail(error.KeymapFailed);
+        ) catch |err| {
+            log.err("Failed to update keymap: mmap returned {s}.", .{@errorName(err)});
             return;
         };
         defer std.posix.munmap(mapped);
 
-        const text = client.gpa.dupeSentinel(u8, mapped[0 .. mapped.len - 1], 0) catch {
-            client.fail(error.KeymapFailed);
+        const text = client.gpa.dupeSentinel(u8, mapped[0 .. mapped.len - 1], 0) catch |err| {
+            log.err("Failed to update keymap: {s}.", .{@errorName(err)});
             return;
         };
         if (client.keymap) |old| client.gpa.free(old);
         client.keymap = text;
-        if (client.event_error) |err| {
-            if (err == error.KeymapFailed) client.event_error = null;
-        }
-        client.pending.keymap = true;
+        client.state.changes.keymap = true;
     }
 
     fn surface(proxy: *wl.Surface, event: wl.Surface.Event, client: *Client) void {
         _ = proxy;
         switch (event) {
             .enter => |ev| if (ev.output) |output_proxy| {
-                if (client.outputs.setCurrent(output_proxy)) client.pending.render = true;
+                if (client.outputs.setCurrent(output_proxy)) client.state.changes.render = true;
             },
             .leave => |ev| if (ev.output) |output_proxy| {
-                if (client.outputs.clearCurrent(output_proxy)) client.pending.render = true;
+                if (client.outputs.clearCurrent(output_proxy)) client.state.changes.render = true;
             },
         }
     }
@@ -276,11 +302,11 @@ const listeners = struct {
                 if (ev.width != client.layer.width or ev.height != client.layer.height) {
                     client.layer.width = ev.width;
                     client.layer.height = ev.height;
-                    client.pending.render = true;
+                    client.state.changes.render = true;
                 }
                 proxy.ackConfigure(ev.serial);
             },
-            .closed => client.fail(error.SurfaceClosed),
+            .closed => client.state.fail(error.SurfaceClosed),
         }
     }
 
@@ -298,6 +324,6 @@ const listeners = struct {
                 tracked.scale = ev.factor;
             },
         }
-        if (changed and client.outputs.current == tracked) client.pending.render = true;
+        if (changed and client.outputs.current == tracked) client.state.changes.render = true;
     }
 };
