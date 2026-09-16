@@ -21,7 +21,10 @@ flush_pending: bool,
 pub fn init(gpa: Allocator, appearance: Appearance) !Wayland {
     const client = try Client.create(gpa, appearance.position, appearance.margin);
     errdefer client.destroy();
-    var model = try Model.init(gpa, .{ .keymap = .{ .serialized = client.serializedKeymap() } });
+    var model = try Model.init(gpa, .{
+        .keymap = .{ .serialized = client.serializedKeymap() },
+        .collapse_repetitions = appearance.collapse_repetitions,
+    });
     errdefer model.deinit();
     return .{
         .model = model,

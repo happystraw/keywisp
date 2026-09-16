@@ -70,10 +70,10 @@ pub fn entry(value: *const Entry, buffer: []u8) Error![:0]const u8 {
     }
 
     if (value.repetition > 1) {
-        try append(buffer, &used, "ₓ");
+        try append(buffer, &used, "×");
         var count_buffer: [32]u8 = undefined;
         const digits = std.fmt.bufPrint(&count_buffer, "{d}", .{value.repetition}) catch unreachable;
-        for (digits) |digit| try append(buffer, &used, subscript(digit));
+        try append(buffer, &used, digits);
     }
 
     buffer[used] = 0;
@@ -85,10 +85,4 @@ fn append(buffer: []u8, used: *usize, value: []const u8) Error!void {
     if (value.len > available) return error.FormattedEntryTooLong;
     @memcpy(buffer[used.* .. used.* + value.len], value);
     used.* += value.len;
-}
-
-const subscripts = [_][]const u8{ "₀", "₁", "₂", "₃", "₄", "₅", "₆", "₇", "₈", "₉" };
-fn subscript(digit: u8) []const u8 {
-    if (digit < '0' or digit > '9') return "";
-    return subscripts[digit - '0'];
 }

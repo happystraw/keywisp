@@ -24,7 +24,7 @@ pub const USAGE =
     \\  -h, --help                      show this help
     \\  -V, --version                   show version information
     \\
-    \\wayland appearance:
+    \\wayland:
     \\  --theme THEME                   dark, light, wisp-dark, or wisp-light
     \\                                  (default: dark)
     \\                                  explicit appearance options override the theme
@@ -48,17 +48,25 @@ pub const USAGE =
     \\  --key-border-color COLOR        key border color
     \\  --key-border-width PX           key border width; 0 disables border
     \\  --key-radius PX                 key corner radius; 0 makes it square
+    \\  --key-depth PX                  keycap thickness; 0 makes it flat
+    \\  --key-shadow-color COLOR        shadow color; alpha 00 disables shadow
+    \\  --key-shadow-blur PX            shadow softness; 0 makes it sharp
+    \\  --key-shadow-offset-x PX        horizontal shadow offset; may be negative
+    \\  --key-shadow-offset-y PX        vertical shadow offset; may be negative
     \\
-    \\  --text-color COLOR              newest key text color
-    \\  --history-color COLOR           previous key text color
+    \\  --text-color COLOR              previous key text color
+    \\  --text-highlight-color COLOR    newest key text color
+    \\
+    \\  --no-collapse-repetitions       show repeated inputs as separate keycaps
     \\
     \\stdout:
     \\  --stdout-history COUNT          entries in each line (default: 1; must be > 0)
     \\  --stdout-emit-clear             emit an empty line when history clears
     \\
-    \\PX:    non-negative pixel value
+    \\PX:    non-negative pixel value (except shadow offsets)
     \\FONT:  Pango font description (default: "Sans Bold 16")
     \\COLOR: RRGGBB or RRGGBBAA (FF is opaque, 00 is transparent)
+    \\Automatic dimensions follow font metrics; automatic key depth is half the font size.
     \\
     ;
 
@@ -217,7 +225,7 @@ fn scan(args: Args) ScanResult {
 }
 
 const StyleOption = std.meta.FieldEnum(WaylandOptions.Style);
-const WaylandOption = union(enum) { theme, position, margin, style: StyleOption };
+const WaylandOption = union(enum) { theme, position, margin, no_collapse_repetitions, style: StyleOption };
 const wayland_options = std.StaticStringMap(WaylandOption).initComptime(.{
     .{ "--theme", .theme },
     .{ "--position", .position },
@@ -240,8 +248,14 @@ const wayland_options = std.StaticStringMap(WaylandOption).initComptime(.{
     .{ "--key-border-color", WaylandOption{ .style = .key_border_color } },
     .{ "--key-border-width", WaylandOption{ .style = .key_border_width } },
     .{ "--key-radius", WaylandOption{ .style = .key_radius } },
+    .{ "--key-depth", WaylandOption{ .style = .key_depth } },
+    .{ "--key-shadow-color", WaylandOption{ .style = .key_shadow_color } },
+    .{ "--key-shadow-blur", WaylandOption{ .style = .key_shadow_blur } },
+    .{ "--key-shadow-offset-x", WaylandOption{ .style = .key_shadow_offset_x } },
+    .{ "--key-shadow-offset-y", WaylandOption{ .style = .key_shadow_offset_y } },
     .{ "--text-color", WaylandOption{ .style = .text_color } },
-    .{ "--history-color", WaylandOption{ .style = .history_color } },
+    .{ "--text-highlight-color", WaylandOption{ .style = .text_highlight_color } },
+    .{ "--no-collapse-repetitions", .no_collapse_repetitions },
 });
 fn applyWaylandOption(
     appearance: *WaylandOptions,
@@ -249,8 +263,15 @@ fn applyWaylandOption(
     option: Option,
     args: *ArgIterator,
 ) ?Diagnostic {
+    if (kind == .no_collapse_repetitions) {
+        if (option.rejectValue()) |diagnostic| return diagnostic;
+        appearance.collapse_repetitions = false;
+        return null;
+    }
+
     const value = option.value orelse args.next() orelse return option.missingValue();
     switch (kind) {
+        .no_collapse_repetitions => unreachable,
         .theme => {},
         .position => appearance.position = parsePosition(value) orelse return option.invalidValue(value),
         .margin => {
@@ -277,8 +298,13 @@ fn applyWaylandOption(
             .key_border_color => appearance.style.key_border_color = parseColor(value) orelse return option.invalidValue(value),
             .key_border_width => appearance.style.key_border_width = parseInt(u32, value) orelse return option.invalidValue(value),
             .key_radius => appearance.style.key_radius = parseInt(u32, value) orelse return option.invalidValue(value),
+            .key_depth => appearance.style.key_depth = parseSpacing(value) orelse return option.invalidValue(value),
+            .key_shadow_color => appearance.style.key_shadow_color = parseColor(value) orelse return option.invalidValue(value),
+            .key_shadow_blur => appearance.style.key_shadow_blur = parseSpacing(value) orelse return option.invalidValue(value),
+            .key_shadow_offset_x => appearance.style.key_shadow_offset_x = parseInt(i32, value) orelse return option.invalidValue(value),
+            .key_shadow_offset_y => appearance.style.key_shadow_offset_y = parseInt(i32, value) orelse return option.invalidValue(value),
             .text_color => appearance.style.text_color = parseColor(value) orelse return option.invalidValue(value),
-            .history_color => appearance.style.history_color = parseColor(value) orelse return option.invalidValue(value),
+            .text_highlight_color => appearance.style.text_highlight_color = parseColor(value) orelse return option.invalidValue(value),
         },
     }
     return null;
@@ -473,6 +499,7 @@ test "defaults" {
         .wayland => |appearance| {
             const expected = WaylandOptions.themed(.dark);
             try std.testing.expectEqual(expected.style.panel_background, appearance.style.panel_background);
+            try std.testing.expect(appearance.collapse_repetitions);
         },
         .writer => return error.UnexpectedBackend,
     }
@@ -481,6 +508,7 @@ test "defaults" {
 test "Wayland options override the selected theme" {
     const options = switch (parse(.{ .vector = &.{
         "test-cli",
+        "--no-collapse-repetitions",
         "--theme=dark",
         "--theme",
         "light",
@@ -493,6 +521,11 @@ test "Wayland options override the selected theme" {
         "--key-padding-horizontal=10",
         "--key-padding-vertical=5",
         "--key-gap=4",
+        "--key-depth=5",
+        "--key-shadow-color=00000060",
+        "--key-shadow-blur=6",
+        "--key-shadow-offset-x=-2",
+        "--key-shadow-offset-y=3",
     } })) {
         .run => |options| options,
         else => return error.UnexpectedResult,
@@ -503,17 +536,23 @@ test "Wayland options override the selected theme" {
         .writer => return error.UnexpectedBackend,
     };
     try std.testing.expectEqual(Color.rgba(0x123456FF), appearance.style.panel_background);
+    try std.testing.expect(!appearance.collapse_repetitions);
     try std.testing.expectEqual(Color.rgba(0xABCDEF80), appearance.style.panel_border_color);
     try std.testing.expectEqual(0x12, appearance.style.panel_background.r);
     try std.testing.expectEqual(0x34, appearance.style.panel_background.g);
     try std.testing.expectEqual(0x56, appearance.style.panel_background.b);
     try std.testing.expectEqual(0xFF, appearance.style.panel_background.a);
-    try std.testing.expectEqual(WaylandOptions.themed(.light).style.text_color, appearance.style.text_color);
+    try std.testing.expectEqual(WaylandOptions.themed(.light).style.text_highlight_color, appearance.style.text_highlight_color);
     try std.testing.expectEqual(Position.top_right, appearance.position);
     try std.testing.expectEqual(8, appearance.style.panel_padding);
     try std.testing.expectEqual(10, appearance.style.key_padding_horizontal);
     try std.testing.expectEqual(5, appearance.style.key_padding_vertical);
     try std.testing.expectEqual(4, appearance.style.key_gap);
+    try std.testing.expectEqual(5, appearance.style.key_depth);
+    try std.testing.expectEqual(Color.rgba(0x00000060), appearance.style.key_shadow_color);
+    try std.testing.expectEqual(6, appearance.style.key_shadow_blur);
+    try std.testing.expectEqual(-2, appearance.style.key_shadow_offset_x);
+    try std.testing.expectEqual(3, appearance.style.key_shadow_offset_y);
 }
 
 test "stdout options may precede stdout" {
@@ -565,6 +604,8 @@ test "integer boundaries" {
         .{ "--key-padding-horizontal", "-1" },
         .{ "--key-padding-vertical", "-1" },
         .{ "--key-gap", "-1" },
+        .{ "--key-depth", "-1" },
+        .{ "--key-shadow-blur", "-1" },
     }) |case| {
         const diagnostic = switch (parse(.{ .vector = &.{ "test-cli", case[0], case[1] } })) {
             .diagnostic => |diagnostic| diagnostic,
@@ -582,6 +623,8 @@ test "diagnostics" {
         .{ &.{ "test-cli", "--theme=unknown" }, Diagnostic.Kind.invalid_value, "--theme" },
         .{ &.{ "test-cli", "--panel-background=#123456" }, Diagnostic.Kind.invalid_value, "--panel-background" },
         .{ &.{ "test-cli", "--stdout=yes" }, Diagnostic.Kind.unexpected_value, "--stdout" },
+        .{ &.{ "test-cli", "--no-collapse-repetitions=false" }, Diagnostic.Kind.unexpected_value, "--no-collapse-repetitions" },
+        .{ &.{ "test-cli", "--no-collapse-repetitions", "--stdout" }, Diagnostic.Kind.wrong_backend, "--no-collapse-repetitions" },
     }) |case| {
         const diagnostic = switch (parse(.{ .vector = case[0] })) {
             .diagnostic => |diagnostic| diagnostic,

@@ -15,6 +15,7 @@ pub const Metrics = struct {
     width: i32,
     height: i32,
     baseline: i32,
+    font_size: i32,
 };
 
 pub const Layout = opaque {
@@ -28,13 +29,14 @@ pub const Layout = opaque {
     fn setText(self: *Layout, content: []const u8) void {
         ffi.pango.pango_layout_set_text(self, content.ptr, @intCast(content.len));
     }
-    fn metrics(self: *Layout) Metrics {
+    fn metrics(self: *Layout, desc: *const FontDescription) Metrics {
         var logical: Rectangle = undefined;
         ffi.pango.pango_layout_get_pixel_extents(self, null, &logical);
         return .{
             .width = logical.width,
             .height = logical.height,
             .baseline = @divTrunc(ffi.pango.pango_layout_get_baseline(self), scale),
+            .font_size = @divFloor(ffi.pango.pango_font_description_get_size(desc) - 1, scale) + 1,
         };
     }
     fn show(self: *Layout, cairo: *Cairo) void {
@@ -57,7 +59,7 @@ pub const text = struct {
         defer desc.destroy();
         layout.setFontDescription(desc);
         layout.setText(content);
-        return layout.metrics();
+        return layout.metrics(desc);
     }
 
     pub fn draw(cairo: *Cairo, font: [:0]const u8, content: []const u8) CreateError!void {
@@ -74,6 +76,7 @@ pub const text = struct {
 const ffi = struct {
     const pango = struct {
         extern fn pango_font_description_from_string(str: [*:0]const u8) ?*FontDescription;
+        extern fn pango_font_description_get_size(desc: *const FontDescription) c_int;
         extern fn pango_layout_set_font_description(layout: *Layout, desc: *const FontDescription) void;
         extern fn pango_font_description_free(desc: *FontDescription) void;
         extern fn pango_layout_set_text(layout: *Layout, text: [*]const u8, length: c_int) void;

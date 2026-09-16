@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const Cairo = opaque {
-    pub const Operator = enum(c_int) { clear = 0, source = 1, _ };
+    pub const Operator = enum(c_int) { clear = 0, source = 1, over = 2, _ };
     pub const Antialias = enum(c_int) { subpixel = 3, best = 6, _ };
     pub const HintStyle = enum(c_int) { full = 4, _ };
     pub const SubpixelOrder = enum(c_int) { default = 0, rgb = 1, bgr = 2, vrgb = 3, vbgr = 4, _ };
@@ -23,6 +23,27 @@ pub const Cairo = opaque {
     };
 
     pub const Rectangle = extern struct { x: f64, y: f64, width: f64, height: f64 };
+
+    pub const Mesh = opaque {
+        pub fn create() CreateError!*Mesh {
+            const mesh = ffi.cairo.cairo_pattern_create_mesh();
+            errdefer mesh.destroy();
+            try mesh.check();
+            return mesh;
+        }
+
+        pub fn check(self: *Mesh) CreateError!void {
+            if (ffi.cairo.cairo_pattern_status(self).toError()) |err| return err;
+        }
+
+        pub const destroy = ffi.cairo.cairo_pattern_destroy;
+        pub const beginPatch = ffi.cairo.cairo_mesh_pattern_begin_patch;
+        pub const endPatch = ffi.cairo.cairo_mesh_pattern_end_patch;
+        pub const moveTo = ffi.cairo.cairo_mesh_pattern_move_to;
+        pub const lineTo = ffi.cairo.cairo_mesh_pattern_line_to;
+        pub const curveTo = ffi.cairo.cairo_mesh_pattern_curve_to;
+        pub const setCornerColorRgba = ffi.cairo.cairo_mesh_pattern_set_corner_color_rgba;
+    };
 
     pub const Surface = opaque {
         pub const destroy = ffi.cairo.cairo_surface_destroy;
@@ -67,10 +88,13 @@ pub const Cairo = opaque {
     pub const status = ffi.cairo.cairo_status;
     pub const save = ffi.cairo.cairo_save;
     pub const restore = ffi.cairo.cairo_restore;
+    pub const pushGroup = ffi.cairo.cairo_push_group;
+    pub const popGroupToSource = ffi.cairo.cairo_pop_group_to_source;
     pub const scale = ffi.cairo.cairo_scale;
     pub const setOperator = ffi.cairo.cairo_set_operator;
 
     pub const setSourceRgba = ffi.cairo.cairo_set_source_rgba;
+    pub const setSource = ffi.cairo.cairo_set_source;
     pub const paint = ffi.cairo.cairo_paint;
     pub const setAntialias = ffi.cairo.cairo_set_antialias;
     pub const setFontOptions = ffi.cairo.cairo_set_font_options;
@@ -83,6 +107,8 @@ pub const Cairo = opaque {
     pub const setLineWidth = ffi.cairo.cairo_set_line_width;
     pub const stroke = ffi.cairo.cairo_stroke;
     pub const moveTo = ffi.cairo.cairo_move_to;
+    pub const lineTo = ffi.cairo.cairo_line_to;
+    pub const clip = ffi.cairo.cairo_clip;
 };
 
 const ffi = struct {
@@ -92,9 +118,21 @@ const ffi = struct {
         extern fn cairo_status(cairo: *Cairo) Cairo.Status;
         extern fn cairo_save(cairo: *Cairo) void;
         extern fn cairo_restore(cairo: *Cairo) void;
+        extern fn cairo_push_group(cairo: *Cairo) void;
+        extern fn cairo_pop_group_to_source(cairo: *Cairo) void;
         extern fn cairo_scale(cairo: *Cairo, x: f64, y: f64) void;
         extern fn cairo_set_operator(cairo: *Cairo, op: Cairo.Operator) void;
         extern fn cairo_set_source_rgba(cairo: *Cairo, r: f64, g: f64, b: f64, a: f64) void;
+        extern fn cairo_set_source(cairo: *Cairo, pattern: *Cairo.Mesh) void;
+        extern fn cairo_pattern_create_mesh() *Cairo.Mesh;
+        extern fn cairo_pattern_destroy(pattern: *Cairo.Mesh) void;
+        extern fn cairo_pattern_status(pattern: *Cairo.Mesh) Cairo.Status;
+        extern fn cairo_mesh_pattern_begin_patch(pattern: *Cairo.Mesh) void;
+        extern fn cairo_mesh_pattern_end_patch(pattern: *Cairo.Mesh) void;
+        extern fn cairo_mesh_pattern_move_to(pattern: *Cairo.Mesh, x: f64, y: f64) void;
+        extern fn cairo_mesh_pattern_line_to(pattern: *Cairo.Mesh, x: f64, y: f64) void;
+        extern fn cairo_mesh_pattern_curve_to(pattern: *Cairo.Mesh, x1: f64, y1: f64, x2: f64, y2: f64, x3: f64, y3: f64) void;
+        extern fn cairo_mesh_pattern_set_corner_color_rgba(pattern: *Cairo.Mesh, corner: c_uint, r: f64, g: f64, b: f64, a: f64) void;
         extern fn cairo_paint(cairo: *Cairo) void;
         extern fn cairo_set_antialias(cairo: *Cairo, aa: Cairo.Antialias) void;
         extern fn cairo_font_options_create() *Cairo.FontOptions;
@@ -113,6 +151,8 @@ const ffi = struct {
         extern fn cairo_set_line_width(cairo: *Cairo, width: f64) void;
         extern fn cairo_stroke(cairo: *Cairo) void;
         extern fn cairo_move_to(cairo: *Cairo, x: f64, y: f64) void;
+        extern fn cairo_line_to(cairo: *Cairo, x: f64, y: f64) void;
+        extern fn cairo_clip(cairo: *Cairo) void;
         extern fn cairo_recording_surface_create(content: Cairo.Content, extents: ?*const Cairo.Rectangle) *Cairo.Surface;
         extern fn cairo_surface_destroy(surface: *Cairo.Surface) void;
         extern fn cairo_surface_status(surface: *Cairo.Surface) Cairo.Status;

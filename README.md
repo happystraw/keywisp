@@ -64,12 +64,14 @@ keywisp -B -S
 
 Keywisp includes four themes:
 
-| Theme        | Appearance                                    |
-| ------------ | --------------------------------------------- |
-| `dark`       | Dark panel (default)                          |
-| `light`      | Light panel                                   |
-| `wisp-dark`  | Transparent panel with dark floating keycaps  |
-| `wisp-light` | Transparent panel with light floating keycaps |
+| Theme        | Appearance                               |
+| ------------ | ---------------------------------------- |
+| `dark`       | Dark panel (default)                     |
+| `light`      | Light panel                              |
+| `wisp-dark`  | Floating dark keycaps with soft shadows  |
+| `wisp-light` | Floating light keycaps with soft shadows |
+
+![preview](https://github.com/user-attachments/assets/9b25baa5-5484-42bb-ad07-01757723223a)
 
 Select a theme with, for example:
 
@@ -83,12 +85,11 @@ spacing, and other appearance settings.
 Example:
 
 ```sh
-keywisp --theme wisp-dark \
-  --position top \
+keywisp --theme wisp-light \
+  --position top-right \
   --margin 32 \
   --max-width 720 \
-  --font "Sans Bold 18" \
-  --text-color FFFFFFFF
+  --font "Serif Bold 12"
 ```
 
 Run the following command for all available options:

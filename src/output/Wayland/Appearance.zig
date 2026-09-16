@@ -41,27 +41,37 @@ pub const Position = enum {
 };
 
 pub const Style = struct {
-    panel_background: Color = .rgba(0x191724F2),
-    panel_border_color: Color = .rgba(0x6E6A86FF),
+    max_width: i32 = 600,
+
+    panel_background: Color,
+    panel_border_color: Color,
     panel_border_width: u32 = 2,
     panel_radius: u32 = 12,
-    key_background: Color = .rgba(0x1F1D2EFF),
-    key_border_color: Color = .rgba(0x403D52FF),
-    key_border_width: u32 = 1,
-    key_radius: u32 = 7,
-    text_color: Color = .rgba(0xC4A7E7FF),
-    history_color: Color = .rgba(0x908CAAFF),
-    font: [:0]const u8 = "Sans Bold 16",
-    max_width: i32 = 600,
     panel_padding: ?i32 = null,
+
+    key_background: Color,
+    key_border_color: Color,
+    key_border_width: u32 = 1,
+    key_radius: ?u32 = null,
+    key_depth: ?i32 = null,
     key_padding_horizontal: ?i32 = null,
     key_padding_vertical: ?i32 = null,
     key_gap: ?i32 = null,
+
+    key_shadow_color: Color,
+    key_shadow_blur: ?i32 = null,
+    key_shadow_offset_x: ?i32 = null,
+    key_shadow_offset_y: ?i32 = null,
+
+    font: [:0]const u8 = "Sans Bold 16",
+    text_color: Color,
+    text_highlight_color: Color,
 };
 
 position: Position = .bottom,
 margin: i32 = 24,
-style: Style = .{},
+collapse_repetitions: bool = true,
+style: Style = themeStyle(.dark),
 
 pub const Theme = enum {
     dark,
@@ -71,35 +81,56 @@ pub const Theme = enum {
 };
 
 pub fn themed(theme: Theme) Appearance {
-    return .{
-        .style = switch (theme) {
-            .dark => .{},
-            .light => .{
-                .panel_background = .rgba(0xFAF4EDF2),
-                .panel_border_color = .rgba(0x9893A5FF),
-                .key_background = .rgba(0xFFFAF3FF),
-                .key_border_color = .rgba(0xF2E9E1FF),
-                .text_color = .rgba(0x907AA9FF),
-                .history_color = .rgba(0x797593FF),
-            },
-            .wisp_dark => .{
-                .panel_background = .rgba(0x00000000),
-                .panel_border_color = .rgba(0x6E6A86C0),
-                .panel_border_width = 0,
-                .key_background = .rgba(0x1F1D2EE6),
-                .key_border_color = .rgba(0x6E6A86C0),
-                .text_color = .rgba(0xC4A7E7FF),
-                .history_color = .rgba(0x908CAAFF),
-            },
-            .wisp_light => .{
-                .panel_background = .rgba(0x00000000),
-                .panel_border_color = .rgba(0x9893A5C0),
-                .panel_border_width = 0,
-                .key_background = .rgba(0xFFFAF3E8),
-                .key_border_color = .rgba(0x9893A5C0),
-                .text_color = .rgba(0x907AA9FF),
-                .history_color = .rgba(0x797593FF),
-            },
+    return .{ .style = themeStyle(theme) };
+}
+
+fn themeStyle(theme: Theme) Style {
+    return switch (theme) {
+        .dark => .{
+            .panel_background = .rgba(0x191724F2),
+            .panel_border_color = .rgba(0x6E6A86FF),
+            .key_background = .rgba(0x1F1D2EFF),
+            .key_border_color = .rgba(0x524D65FF),
+            .key_radius = 6,
+            .key_depth = 0,
+            .key_shadow_color = .rgba(0x00000000),
+            .text_color = .rgba(0x908CAAFF),
+            .text_highlight_color = .rgba(0xC4A7E7FF),
+        },
+        .light => .{
+            .panel_background = .rgba(0xFAF4EDF2),
+            .panel_border_color = .rgba(0x9893A5FF),
+            .key_background = .rgba(0xFFFAF3FF),
+            .key_border_color = .rgba(0xDED3C8FF),
+            .key_radius = 6,
+            .key_depth = 0,
+            .key_shadow_color = .rgba(0x00000000),
+            .text_color = .rgba(0x797593FF),
+            .text_highlight_color = .rgba(0x907AA9FF),
+        },
+        .wisp_dark => .{
+            .panel_background = .rgba(0x00000000),
+            .panel_border_color = .rgba(0x00000000),
+            .panel_border_width = 0,
+            .panel_padding = 0,
+            .key_background = .rgba(0x363142FF),
+            .key_border_color = .rgba(0x00000000),
+            .key_border_width = 0,
+            .key_shadow_color = .rgba(0x00000060),
+            .text_color = .rgba(0xB2A8C0FF),
+            .text_highlight_color = .rgba(0xE2D4FAFF),
+        },
+        .wisp_light => .{
+            .panel_background = .rgba(0x00000000),
+            .panel_border_color = .rgba(0x00000000),
+            .panel_border_width = 0,
+            .panel_padding = 0,
+            .key_background = .rgba(0xF4EFE6FF),
+            .key_border_color = .rgba(0x00000000),
+            .key_border_width = 0,
+            .key_shadow_color = .rgba(0x00000040),
+            .text_color = .rgba(0x817787FF),
+            .text_highlight_color = .rgba(0x70528FFF),
         },
     };
 }
