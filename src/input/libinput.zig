@@ -36,6 +36,8 @@ pub const LibInput = opaque {
             keyboard_key = 300,
             pointer_button = 402,
             pointer_scroll_wheel = 404,
+            pointer_scroll_finger = 405,
+            pointer_scroll_continuous = 406,
             _,
         };
         const getType = ffi.libinput.libinput_event_get_type;
@@ -107,7 +109,7 @@ pub const LibInput = opaque {
                         },
                     };
                 },
-                .pointer_scroll_wheel => {
+                .pointer_scroll_wheel, .pointer_scroll_finger, .pointer_scroll_continuous => {
                     const pointer = raw.getPointer() orelse continue;
                     const scroll = pointer.getScroll() orelse continue;
                     return .{ .pointer = .{ .scroll = scroll } };

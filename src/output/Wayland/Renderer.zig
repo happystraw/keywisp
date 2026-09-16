@@ -45,7 +45,7 @@ const Layout = struct {
     }
 
     fn fraction(value: i32, divisor: i32) i32 {
-        return @max(1, @divTrunc(value + divisor - 1, divisor));
+        return @max(1, @divFloor(value - 1, divisor) + 1);
     }
 };
 

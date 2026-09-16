@@ -97,4 +97,5 @@ fn subpixelToCairo(subpixel: anytype) Cairo.SubpixelOrder {
 
 test {
     _ = Client;
+    _ = Renderer;
 }
