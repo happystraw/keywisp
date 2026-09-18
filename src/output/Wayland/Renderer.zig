@@ -11,6 +11,8 @@ const Cairo = @import("cairo.zig").Cairo;
 const LayerSurface = @import("LayerSurface.zig");
 const pango = @import("pango.zig");
 const ShmBuffer = @import("ShmBuffer.zig");
+const KeyCache = @import("KeyCache.zig");
+const Bitmap = KeyCache.Bitmap;
 
 const Renderer = @This();
 
@@ -194,6 +196,8 @@ target: *LayerSurface,
 measure_surface: *Cairo.Surface,
 measure_cairo: *Cairo,
 layout: Layout,
+cache: KeyCache = .{},
+active: KeyCache = .{},
 pending_frames: ?*Frame = null,
 
 gpa: Allocator,
@@ -221,6 +225,8 @@ pub fn init(gpa: Allocator, style: Appearance.Style, shm: *wl.Shm, target: *Laye
 }
 
 pub fn deinit(self: *Renderer) void {
+    self.cache.clear(self.gpa);
+    self.active.clear(self.gpa);
     self.measure_cairo.destroy();
     self.measure_surface.destroy();
     var frame = self.pending_frames;
@@ -251,23 +257,21 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
     const target = self.target;
     const scale = if (options.scale > 0) options.scale else 120;
 
-    // 1. Measure the content in logical pixels.
-    const measure_cairo = self.measure_cairo;
-    if (self.layout.scale != scale or self.layout.subpixel != options.subpixel) {
-        try drawing.setup(measure_cairo, scale, options.subpixel);
-        self.layout = try Layout.init(measure_cairo, style, scale, options.subpixel);
+    try self.updateLayout(scale, options.subpixel);
+    defer {
+        self.active.trim(self.gpa, 0);
+        self.trimHistory();
     }
-
     const layout = self.layout;
-
     const end = options.keys.len();
+    const active = try self.prepareKeys(options.keys);
     const bounds: struct { first: usize, width: f64, height: f64 } = blk: {
         var first = end;
         var width: f64 = 1;
         while (first > 0) {
             const index = first - 1;
-            const text_metrics = try metrics.entry(measure_cairo, style.font, options.keys.at(index));
-            const key_width = layout.keycapWidth(text_metrics);
+            const cached = if (index + 1 == end) active.? else try self.cachedKey(options.keys.at(index), null);
+            const key_width = cached.width;
             const next_width = if (first == end)
                 layout.panelWidth(key_width)
             else
@@ -335,33 +339,28 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
         if (style.key_shadow_color.a != 0) {
             var shadow_x = layout.panel_padding + layout.key_shadow_left;
             for (bounds.first..end) |key| {
-                const text_metrics = try metrics.entry(measure_cairo, style.font, options.keys.at(key));
-                const width = layout.keycapWidth(text_metrics);
-                drawing.shadow(buffer_cairo, shadow_x, y, width, layout, style);
-                shadow_x += width + layout.key_gap;
+                const phase = KeyCache.Phase.at(shadow_x, y, scale);
+                const cached = if (key + 1 == end) active.? else try self.cachedKey(options.keys.at(key), phase);
+                if (key + 1 == end) cached.setPhase(phase);
+                try self.paintShadow(buffer_cairo, cached, shadow_x, y);
+                shadow_x += cached.width + layout.key_gap;
+                self.trimHistory();
             }
         }
 
         var x = layout.panel_padding + layout.key_shadow_left;
         var key = bounds.first;
         while (key < end) : (key += 1) {
-            const entry = options.keys.at(key);
-            var display_buf: format.Buffer = undefined;
-            const display_text = try format.entry(entry, &display_buf);
-            const text_metrics = pango.text.measure(measure_cairo, style.font, display_text) catch
-                return error.TextRenderingFailed;
-            const width = layout.keycapWidth(text_metrics);
-            try drawing.keycap(buffer_cairo, x, y, width, layout, style);
-
-            drawing.setSourceColor(buffer_cairo, if (key + 1 == end) style.text_highlight_color else style.text_color);
-            const text_position = layout.textPosition(width, text_metrics);
-            buffer_cairo.moveTo(
-                x + text_position.x,
-                y + text_position.y,
-            );
-            pango.text.draw(buffer_cairo, style.font, display_text) catch return error.TextRenderingFailed;
-
-            x += width + layout.key_gap;
+            const phase = KeyCache.Phase.at(x, y, scale);
+            const cached = if (key + 1 == end) active.? else try self.cachedKey(options.keys.at(key), phase);
+            if (key + 1 == end) {
+                cached.setPhase(phase);
+                try self.paintActive(buffer_cairo, cached, x, y);
+            } else {
+                try self.paintKey(buffer_cairo, cached, x, y);
+            }
+            x += cached.width + layout.key_gap;
+            self.trimHistory();
         }
     }
 
@@ -379,6 +378,172 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
     target.surface.attach(frame.buffer.buffer, 0, 0);
     target.surface.damageBuffer(0, 0, frame.buffer.width, frame.buffer.height);
     target.surface.commit();
+}
+
+fn updateLayout(self: *Renderer, scale: u32, subpixel: Cairo.SubpixelOrder) RenderError!void {
+    if (self.layout.scale == scale and self.layout.subpixel == subpixel) return;
+    try drawing.setup(self.measure_cairo, scale, subpixel);
+    const layout = try Layout.init(self.measure_cairo, self.style, scale, subpixel);
+    self.cache.clear(self.gpa);
+    self.active.clear(self.gpa);
+    self.layout = layout;
+}
+
+fn trimHistory(self: *Renderer) void {
+    const active_bytes = if (self.active.head) |key| key.bytes() else 0;
+    self.cache.trim(self.gpa, active_bytes);
+}
+
+fn prepareKeys(self: *Renderer, keys: Model.View) RenderError!?*KeyCache.Key {
+    const end = keys.len();
+    if (end == 0) {
+        self.active.clear(self.gpa);
+        return null;
+    }
+    // Preserve the former active key's geometry before replacing its label.
+    if (end > 1) _ = try self.cachedKey(keys.at(end - 2), null);
+    var buffer: format.Buffer = undefined;
+    const text = try format.entry(keys.at(end - 1), &buffer);
+    if (self.active.find(text, null)) |key| return key;
+    const text_metrics = pango.text.measure(self.measure_cairo, self.style.font, text) catch
+        return error.TextRenderingFailed;
+    var next: KeyCache = .{};
+    const phase = if (self.active.head) |previous| previous.phase else KeyCache.Phase{};
+    const key = try next.insert(self.gpa, text, text_metrics, self.layout.keycapWidth(text_metrics), phase);
+    self.active.shareShapes(key);
+    self.cache.shareShapes(key);
+    self.active.clear(self.gpa);
+    self.active = next;
+    return key;
+}
+
+fn cachedKey(self: *Renderer, entry: *const Entry, phase: ?KeyCache.Phase) RenderError!*KeyCache.Key {
+    var buffer: format.Buffer = undefined;
+    const text = try format.entry(entry, &buffer);
+    if (self.cache.find(text, phase)) |cached| return cached;
+    // Placement variants share measurements, but never raster images at another phase.
+    const measured = self.cache.find(text, null) orelse self.active.find(text, null);
+    const text_metrics = if (measured) |key| key.metrics else pango.text.measure(self.measure_cairo, self.style.font, text) catch
+        return error.TextRenderingFailed;
+    const origin = phase orelse if (measured) |key| key.phase else KeyCache.Phase{};
+    const key = try self.cache.insert(self.gpa, text, text_metrics, self.layout.keycapWidth(text_metrics), origin);
+    self.active.shareShapes(key);
+    return key;
+}
+
+fn bitmapContext(self: *const Renderer, bitmap: Bitmap) Cairo.CreateError!*Cairo {
+    const cairo = try Cairo.create(bitmap.surface);
+    errdefer cairo.destroy();
+    try drawing.setup(cairo, self.layout.scale, self.layout.subpixel);
+    const factor = @as(f64, @floatFromInt(self.layout.scale)) / 120.0;
+    cairo.translate((@as(f64, @floatFromInt(bitmap.origin_x)) + bitmap.phase.x) / factor, (@as(f64, @floatFromInt(bitmap.origin_y)) + bitmap.phase.y) / factor);
+    cairo.setOperator(.source);
+    return cairo;
+}
+
+fn paintShadow(self: *Renderer, cairo: *Cairo, cached: *KeyCache.Key, x: f64, y: f64) RenderError!void {
+    if (cached.shadow == null) {
+        self.cache.shareShapes(cached);
+        if (cached.shadow == null) {
+            const layout = self.layout;
+            const bitmap = try Bitmap.init(cached.width, layout.key_height, layout.scale, .{
+                .left = layout.key_shadow_left,
+                .right = @max(0, layout.key_shadow_blur + layout.key_shadow_offset_x),
+                .top = layout.key_shadow_top,
+                .bottom = @max(0, layout.key_shadow_blur + layout.key_shadow_offset_y),
+            }, cached.phase);
+            errdefer bitmap.deinit();
+            const context = try self.bitmapContext(bitmap);
+            defer context.destroy();
+            drawing.shadow(context, 0, 0, cached.width, layout, self.style);
+            cached.shadow = bitmap;
+        }
+    }
+    cached.shadow.?.paint(cairo, x, y, self.layout.scale);
+}
+
+fn prepareBackground(self: *Renderer, cached: *KeyCache.Key) RenderError!void {
+    self.cache.shareShapes(cached);
+    if (cached.background == null) {
+        const padding = self.style.key_border_width / 2.0;
+        const bitmap = try Bitmap.init(cached.width, self.layout.key_height, self.layout.scale, .{
+            .left = padding,
+            .right = padding,
+            .top = padding,
+            .bottom = padding,
+        }, cached.phase);
+        errdefer bitmap.deinit();
+        const context = try self.bitmapContext(bitmap);
+        defer context.destroy();
+        try drawing.keycap(context, 0, 0, cached.width, self.layout, self.style);
+        // Flat keycaps use SOURCE, so translucent colors need a coverage mask.
+        if (std.meta.eql(self.layout.key_depth, Appearance.Depth.uniform(0)) and (self.style.key_background.a != 255 or
+            (self.style.key_border_width > 0 and self.style.key_border_color.a != 255)))
+        {
+            const mask = try Bitmap.init(cached.width, self.layout.key_height, self.layout.scale, .{
+                .left = padding,
+                .right = padding,
+                .top = padding,
+                .bottom = padding,
+            }, cached.phase);
+            errdefer mask.deinit();
+            const mask_context = try self.bitmapContext(mask);
+            defer mask_context.destroy();
+            var opaque_style = self.style;
+            opaque_style.key_background.a = 255;
+            opaque_style.key_border_color.a = 255;
+            try drawing.keycap(mask_context, 0, 0, cached.width, self.layout, opaque_style);
+            cached.background_coverage = mask;
+        }
+        cached.background = bitmap;
+    }
+}
+
+fn paintActive(self: *Renderer, cairo: *Cairo, key: *KeyCache.Key, x: f64, y: f64) RenderError!void {
+    try self.prepareBackground(key);
+    key.background.?.paintMasked(cairo, x, y, self.layout.scale, key.background_coverage);
+    // The changing repeat label is drawn straight into the frame, never cached.
+    cairo.save();
+    defer cairo.restore();
+    cairo.setOperator(.source);
+    try self.drawText(cairo, key, x, y, self.style.text_highlight_color);
+}
+
+fn paintKey(self: *Renderer, cairo: *Cairo, cached: *KeyCache.Key, x: f64, y: f64) RenderError!void {
+    if (cached.face) |face| {
+        face.paint(cairo, x, y, self.layout.scale);
+        return;
+    }
+    try self.prepareBackground(cached);
+    const color = self.style.text_color;
+    const face = try cached.background.?.copy();
+    errdefer face.deinit();
+    const context = try self.bitmapContext(face);
+    defer context.destroy();
+    try self.drawText(context, cached, 0, 0, color);
+    var coverage: ?Bitmap = null;
+    errdefer if (coverage) |mask| mask.deinit();
+    if (self.style.key_background.a != 255 or color.a != 255 or
+        (self.style.key_border_width > 0 and self.style.key_border_color.a != 255))
+    {
+        // Track how much of the frame the original SOURCE operations replace.
+        // This differs from the result's alpha for translucent colors.
+        const mask = try (cached.background_coverage orelse cached.background.?).copy();
+        errdefer mask.deinit();
+        const mask_context = try self.bitmapContext(mask);
+        defer mask_context.destroy();
+        try self.drawText(mask_context, cached, 0, 0, .rgba(0xFFFFFFFF));
+        coverage = mask;
+    }
+    cached.face = .{ .bitmap = face, .coverage = coverage };
+    cached.face.?.paint(cairo, x, y, self.layout.scale);
+}
+
+fn drawText(self: *const Renderer, cairo: *Cairo, cached: *const KeyCache.Key, x: f64, y: f64, color: Appearance.Color) RenderError!void {
+    drawing.setSourceColor(cairo, color);
+    const position = self.layout.textPosition(cached.width, cached.metrics);
+    cairo.moveTo(x + position.x, y + position.y);
+    pango.text.draw(cairo, self.style.font, cached.text) catch return error.TextRenderingFailed;
 }
 
 fn scaledSize(logical_size: i32, scale_numerator: u32) error{BufferSizeOverflow}!i32 {
@@ -985,4 +1150,350 @@ test "fractional spacing survives layout until the final surface bounds" {
     try drawing.keycap(cairo, 1.125, 2.25, width, layout, style);
     try std.testing.expectEqual(101, try Layout.pixelSize(100.25));
     try std.testing.expectEqual(152, try scaledSize(101, 180));
+}
+
+const TestCanvas = struct {
+    data: []u8,
+    surface: *Cairo.Surface,
+    cairo: *Cairo,
+
+    fn init() !TestCanvas {
+        const data = try std.testing.allocator.alloc(u8, 512 * 512 * 4);
+        errdefer std.testing.allocator.free(data);
+        @memset(data, 0);
+        const surface = try Cairo.Surface.image(data.ptr, .argb32, 512, 512, 512 * 4);
+        errdefer surface.destroy();
+        return .{ .data = data, .surface = surface, .cairo = try Cairo.create(surface) };
+    }
+
+    fn deinit(self: TestCanvas) void {
+        self.cairo.destroy();
+        self.surface.destroy();
+        std.testing.allocator.free(self.data);
+    }
+
+    fn reset(self: TestCanvas, scale: u32) !void {
+        self.cairo.identityMatrix();
+        self.cairo.setOperator(.source);
+        self.cairo.setSourceRgba(0.2, 0.3, 0.4, 0.6);
+        self.cairo.paint();
+        try drawing.setup(self.cairo, scale, .default);
+    }
+};
+
+test "historical and active keys preserve pixels without caching highlight images" {
+    for ([_]Appearance.Theme{ .light, .dark, .wisp_light, .wisp_dark }) |theme| {
+        for ([_]u32{ 120, 216, 240 }) |scale| {
+            var renderer = try Renderer.init(std.testing.allocator, Appearance.themed(theme).style, undefined, undefined, scale, .default);
+            defer renderer.deinit();
+            var entry = try Entry.init(std.testing.allocator, .{}, "A", "A");
+            defer entry.deinit(std.testing.allocator);
+            const cached = try renderer.cachedKey(&entry, .{});
+            const actual = try TestCanvas.init();
+            defer actual.deinit();
+            const expected = try TestCanvas.init();
+            defer expected.deinit();
+            for ([_]bool{ false, true, false }) |active| {
+                const color = if (active) renderer.style.text_highlight_color else renderer.style.text_color;
+                try actual.reset(scale);
+                try expected.reset(scale);
+                if (active) try renderer.paintActive(actual.cairo, cached, 20, 20) else try renderer.paintKey(actual.cairo, cached, 20, 20);
+                try drawing.keycap(expected.cairo, 20, 20, cached.width, renderer.layout, renderer.style);
+                try renderer.drawText(expected.cairo, cached, 20, 20, color);
+                // Rasterizing a local bitmap can differ by a rounding unit at an edge.
+                for (actual.data, expected.data) |a, b| {
+                    try std.testing.expect(@abs(@as(i16, a) - @as(i16, b)) <= 2);
+                }
+            }
+            try std.testing.expect(cached.face != null);
+        }
+    }
+}
+
+test "active drawing preserves the historical face and scale changes clear caches" {
+    var style = Appearance.themed(.wisp_light).style;
+    style.text_highlight_color = style.text_color;
+    var renderer = try Renderer.init(std.testing.allocator, style, undefined, undefined, 120, .default);
+    defer renderer.deinit();
+    var entry = try Entry.init(std.testing.allocator, .{}, "A", "A");
+    defer entry.deinit(std.testing.allocator);
+    const canvas = try TestCanvas.init();
+    defer canvas.deinit();
+    const cached = try renderer.cachedKey(&entry, .{});
+    try renderer.paintShadow(canvas.cairo, cached, 20, 20);
+    try renderer.paintKey(canvas.cairo, cached, 20, 20);
+    const face = cached.face.?.bitmap.surface;
+    try renderer.paintActive(canvas.cairo, cached, 40, 20);
+    try std.testing.expectEqual(face, cached.face.?.bitmap.surface);
+    try renderer.updateLayout(120, .default);
+    try std.testing.expectEqual(cached, renderer.cache.head.?);
+    try renderer.updateLayout(216, .default);
+    try std.testing.expect(renderer.cache.head == null);
+    try std.testing.expectEqual(216, renderer.layout.scale);
+    const resized = try renderer.cachedKey(&entry, .{});
+    try renderer.paintKey(canvas.cairo, resized, 20, 20);
+    try renderer.updateLayout(216, .rgb);
+    try std.testing.expect(renderer.cache.head == null);
+}
+
+test "labels share key geometry but repetition changes text and width" {
+    var renderer = try Renderer.init(std.testing.allocator, Appearance.themed(.wisp_light).style, undefined, undefined, 120, .default);
+    defer renderer.deinit();
+    const canvas = try TestCanvas.init();
+    defer canvas.deinit();
+    var a = try Entry.init(std.testing.allocator, .{}, "A", "A");
+    defer a.deinit(std.testing.allocator);
+    const first = try renderer.cachedKey(&a, .{});
+    try renderer.paintShadow(canvas.cairo, first, 20, 20);
+    try renderer.paintKey(canvas.cairo, first, 20, 20);
+    var b = try Entry.init(std.testing.allocator, .{}, "B", "B");
+    defer b.deinit(std.testing.allocator);
+    const second = try renderer.cachedKey(&b, .{});
+    try std.testing.expectEqual(first.background.?.surface, second.background.?.surface);
+    try std.testing.expectEqual(first.shadow.?.surface, second.shadow.?.surface);
+    a.repetition = 1000;
+    const repeated = try renderer.cachedKey(&a, .{});
+    try std.testing.expectEqualStrings("A×1000", repeated.text);
+    try std.testing.expect(repeated.width > first.width);
+    try std.testing.expect(repeated.background == null and repeated.shadow == null);
+    try std.testing.expectEqualStrings("A", first.text);
+}
+
+test "translucent custom key colors cache without changing SOURCE compositing" {
+    for ([_]Appearance.Theme{ .light, .wisp_light }) |theme| {
+        for ([_]u8{ 0, 80, 255 }) |alpha| {
+            var style = Appearance.themed(theme).style;
+            style.key_background.a = alpha;
+            style.key_border_color.a = 80;
+            style.key_border_width = 2;
+            style.text_color.a = 100;
+            style.text_highlight_color.a = 100;
+            var renderer = try Renderer.init(std.testing.allocator, style, undefined, undefined, 120, .default);
+            defer renderer.deinit();
+            var entry = try Entry.init(std.testing.allocator, .{}, "A", "A");
+            defer entry.deinit(std.testing.allocator);
+            const cached = try renderer.cachedKey(&entry, .{});
+            const actual = try TestCanvas.init();
+            defer actual.deinit();
+            const expected = try TestCanvas.init();
+            defer expected.deinit();
+            for ([_]bool{ true, false }) |active| {
+                try actual.reset(120);
+                try expected.reset(120);
+                if (active) try renderer.paintActive(actual.cairo, cached, 20, 20) else try renderer.paintKey(actual.cairo, cached, 20, 20);
+                try drawing.keycap(expected.cairo, 20, 20, cached.width, renderer.layout, style);
+                try renderer.drawText(expected.cairo, cached, 20, 20, if (active) style.text_highlight_color else style.text_color);
+                for (actual.data, expected.data) |a, b| {
+                    try std.testing.expect(@abs(@as(i16, a) - @as(i16, b)) <= 2);
+                }
+                try std.testing.expectEqual(!active, cached.face != null);
+            }
+        }
+    }
+}
+
+test "cached shadows preserve overlap order and negative offsets" {
+    for ([_]i32{ -12, 0, 12 }) |offset| {
+        var style = Appearance.themed(.wisp_light).style;
+        style.key_shadow_offset_x = offset;
+        style.key_shadow_offset_y = offset;
+        style.key_gap = 0;
+        var renderer = try Renderer.init(std.testing.allocator, style, undefined, undefined, 240, .default);
+        defer renderer.deinit();
+        var entry = try Entry.init(std.testing.allocator, .{}, "A", "A");
+        defer entry.deinit(std.testing.allocator);
+        const cached = try renderer.cachedKey(&entry, .{});
+        const actual = try TestCanvas.init();
+        defer actual.deinit();
+        const expected = try TestCanvas.init();
+        defer expected.deinit();
+        try actual.reset(240);
+        try expected.reset(240);
+        for ([_]f64{ 30, 30 + cached.width }) |x| {
+            try renderer.paintShadow(actual.cairo, cached, x, 30);
+            drawing.shadow(expected.cairo, x, 30, cached.width, renderer.layout, style);
+        }
+        for ([_]f64{ 30, 30 + cached.width }) |x| {
+            try renderer.paintKey(actual.cairo, cached, x, 30);
+            try drawing.keycap(expected.cairo, x, 30, cached.width, renderer.layout, style);
+            try renderer.drawText(expected.cairo, cached, x, 30, style.text_color);
+        }
+        for (actual.data, expected.data) |a, b| {
+            try std.testing.expect(@abs(@as(i16, a) - @as(i16, b)) <= 2);
+        }
+    }
+}
+
+test "repeat updates only the active label and freezes its final state into history" {
+    for ([_]Appearance.Theme{ .light, .wisp_light }) |theme| {
+        var renderer = try Renderer.init(std.testing.allocator, Appearance.themed(theme).style, undefined, undefined, 120, .default);
+        defer renderer.deinit();
+        var model = try Model.init(std.testing.allocator, .{});
+        defer model.deinit();
+        const actual = try TestCanvas.init();
+        defer actual.deinit();
+        const expected = try TestCanvas.init();
+        defer expected.deinit();
+        var previous_background: ?Bitmap = null;
+        defer if (previous_background) |bitmap| bitmap.deinit();
+        var previous_shadow: ?Bitmap = null;
+        defer if (previous_shadow) |bitmap| bitmap.deinit();
+        var previous_width: f64 = 0;
+        var saw_width_change = false;
+        for (0..103) |i| {
+            _ = try model.handle(.{ .keyboard = .{ .code = .a, .state = .pressed } });
+            _ = try model.handle(.{ .keyboard = .{ .code = .a, .state = .released } });
+            const view = model.view();
+            try std.testing.expectEqual(@min(i + 1, 3), view.len());
+            const entry = view.at(view.len() - 1);
+            const repetition = if (i < 3) 1 else i - 1;
+            try std.testing.expectEqual(repetition, entry.repetition);
+            const active = (try renderer.prepareKeys(view)).?;
+            var label: [64]u8 = undefined;
+            const text = if (repetition == 1) "A" else try std.fmt.bufPrint(&label, "A×{d}", .{repetition});
+            try std.testing.expectEqualStrings(text, active.text);
+            try std.testing.expectEqual(active, (try renderer.prepareKeys(view)).?);
+            try actual.reset(120);
+            try expected.reset(120);
+            try renderer.paintShadow(actual.cairo, active, 20, 20);
+            drawing.shadow(expected.cairo, 20, 20, active.width, renderer.layout, renderer.style);
+            try renderer.paintActive(actual.cairo, active, 20, 20);
+            try drawing.keycap(expected.cairo, 20, 20, active.width, renderer.layout, renderer.style);
+            try renderer.drawText(expected.cairo, active, 20, 20, renderer.style.text_highlight_color);
+            try std.testing.expect(active.face == null);
+            try std.testing.expect(active.next == null);
+            if (renderer.cache.head) |history| {
+                try std.testing.expectEqualStrings("A", history.text);
+                try std.testing.expect(history.next == null);
+            }
+            if (previous_background) |prior| {
+                if (previous_width == active.width) {
+                    try std.testing.expectEqual(prior.surface, active.background.?.surface);
+                    if (previous_shadow) |shadow| try std.testing.expectEqual(shadow.surface, active.shadow.?.surface);
+                } else {
+                    saw_width_change = true;
+                }
+                prior.deinit();
+            }
+            if (previous_shadow) |shadow| shadow.deinit();
+            previous_background = active.background.?.share();
+            previous_shadow = if (active.shadow) |shadow| shadow.share() else null;
+            previous_width = active.width;
+            for (actual.data, expected.data) |a, b| {
+                try std.testing.expect(@abs(@as(i16, a) - @as(i16, b)) <= 2);
+            }
+        }
+        try std.testing.expect(saw_width_change);
+        // Only the final repeat count enters history when another key arrives.
+        _ = try model.handle(.{ .keyboard = .{ .code = .b, .state = .pressed } });
+        const view = model.view();
+        const active = (try renderer.prepareKeys(view)).?;
+        try std.testing.expectEqualStrings("B", active.text);
+        const folded = try renderer.cachedKey(view.at(view.len() - 2), .{});
+        try std.testing.expectEqualStrings("A×101", folded.text);
+        try std.testing.expectEqual(previous_background.?.surface, folded.background.?.surface);
+        try actual.reset(120);
+        try expected.reset(120);
+        try renderer.paintKey(actual.cairo, folded, 20, 20);
+        try drawing.keycap(expected.cairo, 20, 20, folded.width, renderer.layout, renderer.style);
+        try renderer.drawText(expected.cairo, folded, 20, 20, renderer.style.text_color);
+        for (actual.data, expected.data) |a, b| {
+            try std.testing.expect(@abs(@as(i16, a) - @as(i16, b)) <= 2);
+        }
+        const face = folded.face.?.bitmap.surface;
+        try renderer.paintKey(actual.cairo, folded, 40, 20);
+        try std.testing.expectEqual(face, folded.face.?.bitmap.surface);
+        try renderer.updateLayout(216, .default);
+        try std.testing.expect(renderer.cache.head == null and renderer.active.head == null);
+        _ = try renderer.prepareKeys(model.view());
+        try renderer.updateLayout(216, .rgb);
+        try std.testing.expect(renderer.cache.head == null and renderer.active.head == null);
+        _ = try renderer.prepareKeys(model.view());
+        model.clear();
+        try std.testing.expect(try renderer.prepareKeys(model.view()) == null);
+        try std.testing.expect(renderer.active.head == null);
+    }
+}
+
+test "cached fractional keycaps preserve placement, asymmetric faces and shadow overlap" {
+    for ([_]Appearance.Theme{ .light, .wisp_light }) |theme| {
+        for ([_]u32{ 120, 168, 180, 216, 240 }) |scale| {
+            var style = Appearance.themed(theme).style;
+            style.font = "Sans Bold 16";
+            style.key_gap = 0.25;
+            style.key_border_width = 0.5;
+            style.key_radius = 3.25;
+            style.key_padding_horizontal = 3.125;
+            style.key_padding_vertical = 2.25;
+            if (theme == .wisp_light) style.key_depth = .{ .top = 0.25, .right = 1.125, .bottom = 0.5, .left = 2.25 };
+            style.key_shadow_blur = 1.25;
+            style.key_shadow_offset_x = -0.5;
+            style.key_shadow_offset_y = 0.75;
+            var renderer = try Renderer.init(std.testing.allocator, style, undefined, undefined, scale, .default);
+            defer renderer.deinit();
+            var entry = try Entry.init(std.testing.allocator, .{}, "Super+P", "Super+P");
+            defer entry.deinit(std.testing.allocator);
+            const actual = try TestCanvas.init();
+            defer actual.deinit();
+            const expected = try TestCanvas.init();
+            defer expected.deinit();
+            for ([_]f64{ 20.125, 20.375, 20.125 }) |start| {
+                try actual.reset(scale);
+                try expected.reset(scale);
+                const width = (try renderer.cachedKey(&entry, null)).width;
+                const y = 20.25;
+                const positions = [_]f64{ start, start + width + style.key_gap.? };
+                for (positions) |x| {
+                    const cached = try renderer.cachedKey(&entry, KeyCache.Phase.at(x, y, scale));
+                    try renderer.paintShadow(actual.cairo, cached, x, y);
+                    drawing.shadow(expected.cairo, x, y, width, renderer.layout, style);
+                }
+                for (positions, 0..) |x, i| {
+                    const cached = try renderer.cachedKey(&entry, KeyCache.Phase.at(x, y, scale));
+                    if (i == 0) try renderer.paintKey(actual.cairo, cached, x, y) else try renderer.paintActive(actual.cairo, cached, x, y);
+                    try drawing.keycap(expected.cairo, x, y, width, renderer.layout, style);
+                    try renderer.drawText(expected.cairo, cached, x, y, if (i == 0) style.text_color else style.text_highlight_color);
+                }
+                for (actual.data, expected.data) |a, b| {
+                    try std.testing.expect(@abs(@as(i16, a) - @as(i16, b)) <= 2);
+                }
+            }
+        }
+    }
+}
+
+test "repeat reuses active geometry at fractional origins and history retains phase variants" {
+    var renderer = try Renderer.init(std.testing.allocator, Appearance.themed(.wisp_light).style, undefined, undefined, 168, .default);
+    defer renderer.deinit();
+    var model = try Model.init(std.testing.allocator, .{});
+    defer model.deinit();
+    const canvas = try TestCanvas.init();
+    defer canvas.deinit();
+    const phase = KeyCache.Phase.at(20.125, 20.25, 168);
+    for (0..10) |_| {
+        _ = try model.handle(.{ .keyboard = .{ .code = .a, .state = .pressed } });
+        _ = try model.handle(.{ .keyboard = .{ .code = .a, .state = .released } });
+    }
+    const first = (try renderer.prepareKeys(model.view())).?;
+    first.setPhase(phase);
+    try renderer.prepareBackground(first);
+    const saved = first.background.?.share();
+    defer saved.deinit();
+    const width = first.width;
+    _ = try model.handle(.{ .keyboard = .{ .code = .a, .state = .pressed } });
+    const repeated = (try renderer.prepareKeys(model.view())).?;
+    try std.testing.expectEqual(width, repeated.width);
+    try std.testing.expectEqualDeep(phase, repeated.phase);
+    try std.testing.expectEqual(saved.surface, repeated.background.?.surface);
+    _ = try model.handle(.{ .keyboard = .{ .code = .b, .state = .pressed } });
+    _ = try renderer.prepareKeys(model.view());
+    const historical = model.view().at(2);
+    const one = try renderer.cachedKey(historical, phase);
+    try renderer.paintKey(canvas.cairo, one, 20.125, 20.25);
+    const face = one.face.?.bitmap.surface;
+    const other_phase = KeyCache.Phase.at(20.375, 20.25, 168);
+    const two = try renderer.cachedKey(historical, other_phase);
+    try std.testing.expect(one != two);
+    try std.testing.expect(two.background == null);
+    try std.testing.expectEqual(face, (try renderer.cachedKey(historical, phase)).face.?.bitmap.surface);
 }

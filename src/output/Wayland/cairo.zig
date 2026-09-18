@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const Cairo = opaque {
-    pub const Operator = enum(c_int) { clear = 0, source = 1, over = 2, _ };
+    pub const Operator = enum(c_int) { clear = 0, source = 1, over = 2, dest_out = 9, add = 12, _ };
     pub const Antialias = enum(c_int) { subpixel = 3, best = 6, _ };
     pub const HintStyle = enum(c_int) { full = 4, _ };
     pub const SubpixelOrder = enum(c_int) { default = 0, rgb = 1, bgr = 2, vrgb = 3, vbgr = 4, _ };
@@ -47,7 +47,15 @@ pub const Cairo = opaque {
 
     pub const Surface = opaque {
         pub const destroy = ffi.cairo.cairo_surface_destroy;
+        pub const reference = ffi.cairo.cairo_surface_reference;
         pub const status = ffi.cairo.cairo_surface_status;
+
+        pub fn createImage(width: i32, height: i32) CreateError!*Surface {
+            const surface = ffi.cairo.cairo_image_surface_create(.argb32, width, height);
+            errdefer surface.destroy();
+            if (surface.status().toError()) |err| return err;
+            return surface;
+        }
 
         pub fn recording(content: Content, extents: ?*const Rectangle) CreateError!*Surface {
             const surface = ffi.cairo.cairo_recording_surface_create(content, extents);
@@ -91,11 +99,13 @@ pub const Cairo = opaque {
     pub const pushGroup = ffi.cairo.cairo_push_group;
     pub const popGroupToSource = ffi.cairo.cairo_pop_group_to_source;
     pub const scale = ffi.cairo.cairo_scale;
+    pub const translate = ffi.cairo.cairo_translate;
     pub const identityMatrix = ffi.cairo.cairo_identity_matrix;
     pub const setOperator = ffi.cairo.cairo_set_operator;
 
     pub const setSourceRgba = ffi.cairo.cairo_set_source_rgba;
     pub const setSource = ffi.cairo.cairo_set_source;
+    pub const setSourceSurface = ffi.cairo.cairo_set_source_surface;
     pub const paint = ffi.cairo.cairo_paint;
     pub const setAntialias = ffi.cairo.cairo_set_antialias;
     pub const setFontOptions = ffi.cairo.cairo_set_font_options;
@@ -121,10 +131,12 @@ const ffi = struct {
         extern fn cairo_push_group(cairo: *Cairo) void;
         extern fn cairo_pop_group_to_source(cairo: *Cairo) void;
         extern fn cairo_scale(cairo: *Cairo, x: f64, y: f64) void;
+        extern fn cairo_translate(cairo: *Cairo, x: f64, y: f64) void;
         extern fn cairo_identity_matrix(cairo: *Cairo) void;
         extern fn cairo_set_operator(cairo: *Cairo, op: Cairo.Operator) void;
         extern fn cairo_set_source_rgba(cairo: *Cairo, r: f64, g: f64, b: f64, a: f64) void;
         extern fn cairo_set_source(cairo: *Cairo, pattern: *Cairo.Mesh) void;
+        extern fn cairo_set_source_surface(cairo: *Cairo, surface: *Cairo.Surface, x: f64, y: f64) void;
         extern fn cairo_pattern_create_mesh() *Cairo.Mesh;
         extern fn cairo_pattern_destroy(pattern: *Cairo.Mesh) void;
         extern fn cairo_pattern_status(pattern: *Cairo.Mesh) Cairo.Status;
@@ -155,7 +167,9 @@ const ffi = struct {
         extern fn cairo_clip(cairo: *Cairo) void;
         extern fn cairo_recording_surface_create(content: Cairo.Content, extents: ?*const Cairo.Rectangle) *Cairo.Surface;
         extern fn cairo_surface_destroy(surface: *Cairo.Surface) void;
+        extern fn cairo_surface_reference(surface: *Cairo.Surface) *Cairo.Surface;
         extern fn cairo_surface_status(surface: *Cairo.Surface) Cairo.Status;
         extern fn cairo_image_surface_create_for_data(data: [*]u8, format: Cairo.Format, width: i32, height: i32, stride: i32) *Cairo.Surface;
+        extern fn cairo_image_surface_create(format: Cairo.Format, width: i32, height: i32) *Cairo.Surface;
     };
 };
