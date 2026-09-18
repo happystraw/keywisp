@@ -29,7 +29,14 @@ pub fn init(gpa: Allocator, appearance: Appearance) !Wayland {
     return .{
         .model = model,
         .client = client,
-        .renderer = .init(gpa, appearance.style, client.shm.?, &client.layer),
+        .renderer = try .init(
+            gpa,
+            appearance.style,
+            client.shm.?,
+            &client.layer,
+            client.scale(),
+            subpixelToCairo(client.subpixel()),
+        ),
         .flush_pending = false,
     };
 }

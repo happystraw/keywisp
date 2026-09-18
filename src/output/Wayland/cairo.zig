@@ -91,6 +91,7 @@ pub const Cairo = opaque {
     pub const pushGroup = ffi.cairo.cairo_push_group;
     pub const popGroupToSource = ffi.cairo.cairo_pop_group_to_source;
     pub const scale = ffi.cairo.cairo_scale;
+    pub const identityMatrix = ffi.cairo.cairo_identity_matrix;
     pub const setOperator = ffi.cairo.cairo_set_operator;
 
     pub const setSourceRgba = ffi.cairo.cairo_set_source_rgba;
@@ -107,7 +108,6 @@ pub const Cairo = opaque {
     pub const setLineWidth = ffi.cairo.cairo_set_line_width;
     pub const stroke = ffi.cairo.cairo_stroke;
     pub const moveTo = ffi.cairo.cairo_move_to;
-    pub const lineTo = ffi.cairo.cairo_line_to;
     pub const clip = ffi.cairo.cairo_clip;
 };
 
@@ -121,6 +121,7 @@ const ffi = struct {
         extern fn cairo_push_group(cairo: *Cairo) void;
         extern fn cairo_pop_group_to_source(cairo: *Cairo) void;
         extern fn cairo_scale(cairo: *Cairo, x: f64, y: f64) void;
+        extern fn cairo_identity_matrix(cairo: *Cairo) void;
         extern fn cairo_set_operator(cairo: *Cairo, op: Cairo.Operator) void;
         extern fn cairo_set_source_rgba(cairo: *Cairo, r: f64, g: f64, b: f64, a: f64) void;
         extern fn cairo_set_source(cairo: *Cairo, pattern: *Cairo.Mesh) void;
@@ -151,7 +152,6 @@ const ffi = struct {
         extern fn cairo_set_line_width(cairo: *Cairo, width: f64) void;
         extern fn cairo_stroke(cairo: *Cairo) void;
         extern fn cairo_move_to(cairo: *Cairo, x: f64, y: f64) void;
-        extern fn cairo_line_to(cairo: *Cairo, x: f64, y: f64) void;
         extern fn cairo_clip(cairo: *Cairo) void;
         extern fn cairo_recording_surface_create(content: Cairo.Content, extents: ?*const Cairo.Rectangle) *Cairo.Surface;
         extern fn cairo_surface_destroy(surface: *Cairo.Surface) void;
