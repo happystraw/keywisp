@@ -14,7 +14,7 @@ pub const CreateError = error{CreateFailed};
 pub const Metrics = struct {
     width: i32,
     height: i32,
-    baseline: i32,
+    baseline: f64,
     font_size: i32,
 };
 
@@ -35,8 +35,8 @@ pub const Layout = opaque {
         return .{
             .width = logical.width,
             .height = logical.height,
-            .baseline = @divTrunc(ffi.pango.pango_layout_get_baseline(self), scale),
             .font_size = @divFloor(ffi.pango.pango_font_description_get_size(desc) - 1, scale) + 1,
+            .baseline = @as(f64, @floatFromInt(ffi.pango.pango_layout_get_baseline(self))) / scale,
         };
     }
     fn show(self: *Layout, cairo: *Cairo) void {
@@ -52,6 +52,26 @@ const FontDescription = opaque {
 };
 
 pub const text = struct {
+    pub fn measureAlphabet(cairo: *Cairo, font: [:0]const u8) CreateError!Metrics {
+        const layout = try Layout.create(cairo);
+        defer layout.destroy();
+        const desc = try FontDescription.create(font);
+        defer desc.destroy();
+        layout.setFontDescription(desc);
+
+        var result: Metrics = .{ .width = 0, .height = 0, .font_size = 0, .baseline = 0 };
+        for ("ABCDEFGHIJKLMNOPQRSTUVWXYZ") |letter| {
+            layout.setText(&.{letter});
+            const measured = layout.metrics(desc);
+            result.width = @max(result.width, measured.width);
+            result.height = @max(result.height, measured.height);
+            result.font_size = measured.font_size;
+            // Keep the maximum alphabet dimensions, but use one fixed baseline.
+            if (letter == 'F') result.baseline = measured.baseline;
+        }
+        return result;
+    }
+
     pub fn measure(cairo: *Cairo, font: [:0]const u8, content: []const u8) CreateError!Metrics {
         const layout = try Layout.create(cairo);
         defer layout.destroy();

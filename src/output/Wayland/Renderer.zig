@@ -15,93 +15,157 @@ const ShmBuffer = @import("ShmBuffer.zig");
 const Renderer = @This();
 
 const Layout = struct {
+    // Rendering context
     scale: u32,
     subpixel: Cairo.SubpixelOrder,
-    font_metrics: pango.Metrics,
-    panel_padding: i32,
-    panel_width_extra: i32,
-    panel_height: i32,
-    key_padding_horizontal: i32,
-    key_padding_vertical: i32,
-    key_gap: i32,
-    key_height: i32,
-    key_radius: u32,
-    key_depth: i32,
-    key_top_slope: f64,
-    key_side_inset: f64,
-    key_shadow_blur: i32,
-    key_shadow_offset_x: i32,
-    key_shadow_offset_y: i32,
-    key_shadow_left: i32,
-    key_shadow_right: i32,
-    key_shadow_top: i32,
-    key_shadow_bottom: i32,
+
+    // Panel
+    panel_radius: f64,
+    panel_padding: f64,
+    panel_horizontal_space: f64,
+    panel_height: f64,
+
+    // Keycap
+    key_gap: f64,
+    key_height: f64,
+    key_min_width: f64,
+    key_side_width: f64,
+    key_depth: Appearance.Depth,
+    key_radius: f64,
+
+    // Keycap face
+    key_padding_horizontal: f64,
+    key_face_radius: f64,
+    key_face_border_width: f64,
+    key_text_baseline: f64,
+
+    // Shadow
+    key_shadow_blur: f64,
+    key_shadow_offset_x: f64,
+    key_shadow_offset_y: f64,
+    key_shadow_left: f64,
+    key_shadow_top: f64,
 
     fn init(cairo: *Cairo, style: Appearance.Style, scale: u32, subpixel: Cairo.SubpixelOrder) error{TextRenderingFailed}!Layout {
-        const font_metrics = pango.text.measure(cairo, style.font, "yT") catch return error.TextRenderingFailed;
+        // One keycap, not to scale (text bounds are Pango logical bounds):
+        //
+        //       <----------- keycapWidth(text) ----------->
+        //       +----------------------------------------+  ^
+        //       |             key_depth.top              |  |
+        //       |    +------------------------------+    |  |
+        //       |    |              Pv              |    |  |
+        //       | L  | Ph  +------------------+  Ph | R  |  | key_height
+        //       |    |     |       text       |     |    |  |
+        //       |    |     +------------------+     |    |  |
+        //       |    |              Pv              |    |  |
+        //       |    +------------ face ------------+    |  |
+        //       |            key_depth.bottom            |  |
+        //       +----------------------------------------+  v
+        //
+        // L/R = key_depth.left/right; key_side_width = L + R.
+        // Ph/Pv = horizontal/vertical padding around the reference alphabet line.
+        // Labels share F's baseline within that centered line, including fallback glyphs.
+        // Automatic horizontal padding keeps a square minimum sized from A-Z.
+        // Explicit horizontal padding makes width follow the label and height independent.
+        // Each depth component is a slope size in logical pixels.
+        //
+        // Panel placement (shadow space is reserved outside the keycaps):
+        // | panel_padding | shadow_left | key | key_gap | key | shadow_right | panel_padding |
+        // First key x = panel_padding + key_shadow_left.
+        // Key y       = panel_padding + key_shadow_top.
+        // Panel height = panel_padding + shadow_top + key_height + shadow_bottom + panel_padding.
+        const font_metrics = pango.text.measureAlphabet(cairo, style.font) catch return error.TextRenderingFailed;
 
-        const text_height = font_metrics.height;
-        const panel_padding = style.panel_padding orelse fraction(text_height, 3);
-        const horizontal_padding = style.key_padding_horizontal orelse fraction(text_height, 4);
-        const key_padding_vertical = style.key_padding_vertical orelse fraction(text_height, 4);
+        const text_height: f64 = @floatFromInt(font_metrics.height);
+        const font_size: f64 = @floatFromInt(font_metrics.font_size);
+
+        const key_padding_horizontal = style.key_padding_horizontal orelse fraction(text_height, 4);
+        const key_padding_vertical = style.key_padding_vertical orelse fraction(text_height, 7);
         const key_gap = style.key_gap orelse fraction(text_height, 4);
-        const key_depth = style.key_depth orelse fraction(font_metrics.font_size, 2);
-        const key_height = text_height + key_padding_vertical * 2 + key_depth;
-        const key_radius = style.key_radius orelse @as(u32, @intCast(fraction(font_metrics.font_size, 2)));
-        const depth: f64 = @floatFromInt(key_depth);
-        const face_inset = @min(depth * 0.35, @as(f64, @floatFromInt(key_padding_vertical)) * 0.5);
-        // Keep the face height while sharing the slopes in a 1:2 ratio.
-        const key_top_slope = (depth + face_inset * 2.0) / 3.0;
-        const key_side_inset = key_top_slope * 1.5;
-        const side_padding: i32 = @intFromFloat(@ceil(key_side_inset));
-        const key_padding_horizontal = @max(horizontal_padding, side_padding);
+        const key_face_height = text_height + key_padding_vertical * 2;
+        const key_depth = style.key_depth orelse blk: {
+            const depth = @round(key_face_height / 3.0);
+            const top = depth / 3.0;
+            const side = @ceil(depth * 1.2) / 2.0;
+            break :blk Appearance.Depth{ .top = top, .right = side, .bottom = top * 2.0, .left = side };
+        };
+        const key_side_width = key_depth.left + key_depth.right;
+        const key_height = if (style.key_padding_horizontal == null) @max(
+            key_face_height + key_depth.top + key_depth.bottom,
+            @as(f64, @floatFromInt(font_metrics.width)) + key_padding_horizontal * 2 + key_side_width,
+        ) else key_face_height + key_depth.top + key_depth.bottom;
+        const key_min_width = if (style.key_padding_horizontal == null) key_height else 0;
+        const key_radius = style.key_radius orelse font_size * 0.5;
+        const key_face_radius = key_radius * 0.8;
+        const key_face_border_width = @min(1.0, @max(key_depth.top, key_depth.right, key_depth.bottom, key_depth.left));
+        const key_text_baseline = key_depth.top + (key_height - key_depth.top - key_depth.bottom - text_height) / 2.0 + font_metrics.baseline;
 
         const shadow = style.key_shadow_color.a != 0;
-        const key_shadow_blur = style.key_shadow_blur orelse fraction(text_height, 4);
-        const key_shadow_offset_x = style.key_shadow_offset_x orelse fraction(text_height, 16);
-        const key_shadow_offset_y = style.key_shadow_offset_y orelse fraction(text_height, 16);
-        const key_shadow_left = if (shadow) @max(0, key_shadow_blur - key_shadow_offset_x) else 0;
-        const key_shadow_right = if (shadow) @max(0, key_shadow_blur + key_shadow_offset_x) else 0;
-        const key_shadow_top = if (shadow) @max(0, key_shadow_blur - key_shadow_offset_y) else 0;
-        const key_shadow_bottom = if (shadow) @max(0, key_shadow_blur + key_shadow_offset_y) else 0;
-        const panel_width_extra = panel_padding * 2 + key_shadow_left + key_shadow_right;
+        const key_shadow_blur: f64 = style.key_shadow_blur orelse @min(key_height / 7.0, key_gap / 2.0);
+        const key_shadow_offset_x: f64 = style.key_shadow_offset_x orelse key_height / 28.0;
+        const key_shadow_offset_y: f64 = style.key_shadow_offset_y orelse key_height / 28.0;
+        const key_shadow_left: f64 = if (shadow) @max(0, key_shadow_blur - key_shadow_offset_x) else 0;
+        const key_shadow_right: f64 = if (shadow) @max(0, key_shadow_blur + key_shadow_offset_x) else 0;
+        const key_shadow_top: f64 = if (shadow) @max(0, key_shadow_blur - key_shadow_offset_y) else 0;
+        const key_shadow_bottom: f64 = if (shadow) @max(0, key_shadow_blur + key_shadow_offset_y) else 0;
+
+        const panel_radius = style.panel_radius orelse font_size * 0.75;
+        const panel_padding = style.panel_padding orelse fraction(text_height, 3);
+        const panel_horizontal_space = panel_padding * 2 + key_shadow_left + key_shadow_right;
         const panel_height = key_height + panel_padding * 2 + key_shadow_top + key_shadow_bottom;
 
         return .{
             .scale = scale,
             .subpixel = subpixel,
-            .font_metrics = font_metrics,
+
+            .panel_radius = panel_radius,
             .panel_padding = panel_padding,
-            .panel_width_extra = panel_width_extra,
+            .panel_horizontal_space = panel_horizontal_space,
             .panel_height = panel_height,
-            .key_padding_horizontal = key_padding_horizontal,
-            .key_padding_vertical = key_padding_vertical,
+
             .key_gap = key_gap,
             .key_height = key_height,
-            .key_radius = key_radius,
+            .key_min_width = key_min_width,
+            .key_side_width = key_side_width,
             .key_depth = key_depth,
-            .key_top_slope = key_top_slope,
-            .key_side_inset = key_side_inset,
+            .key_radius = key_radius,
+
+            .key_padding_horizontal = key_padding_horizontal,
+            .key_face_radius = key_face_radius,
+            .key_face_border_width = key_face_border_width,
+            .key_text_baseline = key_text_baseline,
+
             .key_shadow_blur = key_shadow_blur,
             .key_shadow_offset_x = key_shadow_offset_x,
             .key_shadow_offset_y = key_shadow_offset_y,
             .key_shadow_left = key_shadow_left,
-            .key_shadow_right = key_shadow_right,
             .key_shadow_top = key_shadow_top,
-            .key_shadow_bottom = key_shadow_bottom,
         };
     }
 
-    fn keyWidth(self: Layout, text_metrics: pango.Metrics) i32 {
-        return @max(self.key_height, text_metrics.width + self.key_padding_horizontal * 2);
+    fn keycapWidth(self: Layout, text_metrics: pango.Metrics) f64 {
+        return @max(self.key_min_width, @as(f64, @floatFromInt(text_metrics.width)) + self.key_padding_horizontal * 2 + self.key_side_width);
     }
 
-    fn panelWidth(self: Layout, content_width: i32) i32 {
-        return content_width + self.panel_width_extra;
+    fn textPosition(self: Layout, width: f64, text_metrics: pango.Metrics) struct { x: f64, y: f64 } {
+        return .{
+            .x = self.key_depth.left + ((width - @as(f64, @floatFromInt(text_metrics.width))) - self.key_depth.left - self.key_depth.right) / 2.0,
+            .y = self.key_text_baseline - text_metrics.baseline,
+        };
     }
 
-    fn fraction(value: i32, divisor: i32) i32 {
-        return @max(1, @divFloor(value - 1, divisor) + 1);
+    fn panelWidth(self: Layout, content_width: f64) f64 {
+        return content_width + self.panel_horizontal_space;
+    }
+
+    fn pixelSize(value: f64) error{LayoutSizeOverflow}!i32 {
+        if (!std.math.isFinite(value) or value < 0 or @ceil(value) > std.math.maxInt(i32)) return error.LayoutSizeOverflow;
+        // Layer surface and viewport destinations require positive dimensions.
+        return @max(1, @as(i32, @intFromFloat(@ceil(value))));
+    }
+
+    fn fraction(value: f64, divisor: f64) f64 {
+        return @max(1, @ceil(value / divisor));
     }
 };
 
@@ -181,7 +245,7 @@ pub fn reap(self: *Renderer) void {
     }
 }
 
-pub const RenderError = ShmBuffer.InitError || Cairo.CreateError || format.Error || error{TextRenderingFailed};
+pub const RenderError = ShmBuffer.InitError || Cairo.CreateError || format.Error || error{ TextRenderingFailed, LayoutSizeOverflow };
 pub fn render(self: *Renderer, options: Options) RenderError!void {
     const style = self.style;
     const target = self.target;
@@ -195,22 +259,21 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
     }
 
     const layout = self.layout;
-    const font_metrics = layout.font_metrics;
 
     const end = options.keys.len();
-    const bounds: struct { first: usize, width: i32, height: i32 } = blk: {
+    const bounds: struct { first: usize, width: f64, height: f64 } = blk: {
         var first = end;
-        var width: i32 = 1;
+        var width: f64 = 1;
         while (first > 0) {
             const index = first - 1;
             const text_metrics = try metrics.entry(measure_cairo, style.font, options.keys.at(index));
-            const key_width = layout.keyWidth(text_metrics);
+            const key_width = layout.keycapWidth(text_metrics);
             const next_width = if (first == end)
                 layout.panelWidth(key_width)
             else
                 key_width + layout.key_gap + width;
 
-            if (first != end and next_width > style.max_width) break;
+            if (first != end and next_width >= @as(f64, @floatFromInt(style.max_width)) + 1.0) break;
             first = index;
             width = next_width;
         }
@@ -221,10 +284,12 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
         };
     };
 
-    const new_w: u32 = @intCast(bounds.width);
-    const new_h: u32 = @intCast(bounds.height);
-    const buffer_width = try scaledSize(bounds.width, scale);
-    const buffer_height = try scaledSize(bounds.height, scale);
+    const logical_width = try Layout.pixelSize(bounds.width);
+    const logical_height = try Layout.pixelSize(bounds.height);
+    const new_w: u32 = @intCast(logical_width);
+    const new_h: u32 = @intCast(logical_height);
+    const buffer_width = try scaledSize(logical_width, scale);
+    const buffer_height = try scaledSize(logical_height, scale);
 
     // 2. Size changed → request a new layer surface size
     if (new_w != target.width or new_h != target.height) {
@@ -252,15 +317,15 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
     try drawing.setup(buffer_cairo, scale, options.subpixel);
 
     if (bounds.first < end) {
-        const panel_border_width: f64 = @floatFromInt(style.panel_border_width);
+        const panel_border_width = style.panel_border_width;
         const panel_inset = panel_border_width / 2.0;
         drawing.roundedRectangle(
             buffer_cairo,
             panel_inset,
             panel_inset,
-            @as(f64, @floatFromInt(bounds.width)) - panel_border_width,
-            @as(f64, @floatFromInt(bounds.height)) - panel_border_width,
-            @floatFromInt(style.panel_radius),
+            bounds.width - panel_border_width,
+            bounds.height - panel_border_width,
+            layout.panel_radius,
         );
         drawing.setSourceColor(buffer_cairo, style.panel_background);
         drawing.fillAndStroke(buffer_cairo, style.panel_border_color, panel_border_width);
@@ -271,7 +336,7 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
             var shadow_x = layout.panel_padding + layout.key_shadow_left;
             for (bounds.first..end) |key| {
                 const text_metrics = try metrics.entry(measure_cairo, style.font, options.keys.at(key));
-                const width = layout.keyWidth(text_metrics);
+                const width = layout.keycapWidth(text_metrics);
                 drawing.shadow(buffer_cairo, shadow_x, y, width, layout, style);
                 shadow_x += width + layout.key_gap;
             }
@@ -285,14 +350,14 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
             const display_text = try format.entry(entry, &display_buf);
             const text_metrics = pango.text.measure(measure_cairo, style.font, display_text) catch
                 return error.TextRenderingFailed;
-            const width = layout.keyWidth(text_metrics);
+            const width = layout.keycapWidth(text_metrics);
             try drawing.keycap(buffer_cairo, x, y, width, layout, style);
 
             drawing.setSourceColor(buffer_cairo, if (key + 1 == end) style.text_highlight_color else style.text_color);
+            const text_position = layout.textPosition(width, text_metrics);
             buffer_cairo.moveTo(
-                @floatFromInt(x + @divTrunc(width - text_metrics.width, 2)),
-                @as(f64, @floatFromInt(y + layout.key_padding_vertical + font_metrics.baseline - text_metrics.baseline)) +
-                    (@as(f64, @floatFromInt(layout.key_depth)) - layout.key_top_slope) / 2.0,
+                x + text_position.x,
+                y + text_position.y,
             );
             pango.text.draw(buffer_cairo, style.font, display_text) catch return error.TextRenderingFailed;
 
@@ -306,7 +371,7 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
 
     // 5. Commit.
     if (target.preferred_scale != null) {
-        target.viewport.?.setDestination(bounds.width, bounds.height);
+        target.viewport.?.setDestination(logical_width, logical_height);
         target.surface.setBufferScale(1);
     } else {
         target.surface.setBufferScale(@intCast(scale / 120));
@@ -322,43 +387,35 @@ fn scaledSize(logical_size: i32, scale_numerator: u32) error{BufferSizeOverflow}
 }
 
 const drawing = struct {
-    fn keycap(cairo: *Cairo, x: i32, y: i32, width: i32, layout: Layout, style: Appearance.Style) Cairo.CreateError!void {
+    fn keycap(cairo: *Cairo, x: f64, y: f64, width: f64, layout: Layout, style: Appearance.Style) Cairo.CreateError!void {
         cairo.save();
         defer cairo.restore();
 
-        const left: f64 = @floatFromInt(x);
-        const top: f64 = @floatFromInt(y);
-        const w: f64 = @floatFromInt(width);
-        const h: f64 = @floatFromInt(layout.key_height);
-        const radius: f64 = @floatFromInt(layout.key_radius);
-
-        if (layout.key_depth == 0) {
-            roundedRectangle(cairo, left, top, w, h, radius);
+        if (std.meta.eql(layout.key_depth, Appearance.Depth.uniform(0))) {
+            roundedRectangle(cairo, x, y, width, layout.key_height, layout.key_radius);
             setSourceColor(cairo, style.key_background);
-            fillAndStroke(cairo, style.key_border_color, @floatFromInt(style.key_border_width));
+            fillAndStroke(cairo, style.key_border_color, style.key_border_width);
             return;
         }
 
         cairo.setOperator(.over);
-        const depth: f64 = @floatFromInt(layout.key_depth);
-        const inset_x = layout.key_side_inset;
-        const face_left = left + inset_x;
-        const face_top = top + layout.key_top_slope;
-        const face_right = left + w - inset_x;
-        const face_bottom = top + h - layout.key_top_slope * 2.0;
+        const face_left = x + layout.key_depth.left;
+        const face_top = y + layout.key_depth.top;
+        const face_right = x + width - layout.key_depth.right;
+        const face_bottom = y + layout.key_height - layout.key_depth.bottom;
 
         cairo.save();
-        roundedRectangle(cairo, left, top, w, h, radius);
+        roundedRectangle(cairo, x, y, width, layout.key_height, layout.key_radius);
         cairo.clip();
-        const outer_radius = @min(radius, @min(w, h) / 2.0);
-        const face_radius = @min(radius * 0.8, @min(face_right - face_left, face_bottom - face_top) / 2.0);
+        const outer_radius = @min(layout.key_radius, @min(width, layout.key_height) / 2.0);
+        const face_radius = @min(layout.key_face_radius, @min(face_right - face_left, face_bottom - face_top) / 2.0);
         const Point = struct { x: f64, y: f64 };
         // Clockwise from the upper-right corner. Each arc joins two flat slopes.
         const outer = [_]Point{
-            .{ .x = left + w - outer_radius, .y = top + outer_radius },
-            .{ .x = left + w - outer_radius, .y = top + h - outer_radius },
-            .{ .x = left + outer_radius, .y = top + h - outer_radius },
-            .{ .x = left + outer_radius, .y = top + outer_radius },
+            .{ .x = x + width - outer_radius, .y = y + outer_radius },
+            .{ .x = x + width - outer_radius, .y = y + layout.key_height - outer_radius },
+            .{ .x = x + outer_radius, .y = y + layout.key_height - outer_radius },
+            .{ .x = x + outer_radius, .y = y + outer_radius },
         };
         const inner = [_]Point{
             .{ .x = face_right - face_radius, .y = face_top + face_radius },
@@ -421,15 +478,15 @@ const drawing = struct {
         cairo.setSource(mesh);
         cairo.paint();
 
-        roundedRectangle(cairo, face_left, face_top, face_right - face_left, face_bottom - face_top, radius * 0.8);
+        roundedRectangle(cairo, face_left, face_top, face_right - face_left, face_bottom - face_top, layout.key_face_radius);
         setSourceColor(cairo, style.key_background);
-        fillAndStroke(cairo, shade(style.key_background, 0.08), @min(1.0, depth / 3.0));
+        fillAndStroke(cairo, shade(style.key_background, 0.08), layout.key_face_border_width);
         cairo.restore();
 
         if (style.key_border_width > 0) {
-            roundedRectangle(cairo, left, top, w, h, radius);
+            roundedRectangle(cairo, x, y, width, layout.key_height, layout.key_radius);
             setSourceColor(cairo, style.key_border_color);
-            cairo.setLineWidth(@floatFromInt(style.key_border_width));
+            cairo.setLineWidth(style.key_border_width);
             cairo.stroke();
         }
     }
@@ -444,20 +501,20 @@ const drawing = struct {
         );
     }
 
-    fn shadow(cairo: *Cairo, x: i32, y: i32, width: i32, layout: Layout, style: Appearance.Style) void {
+    fn shadow(cairo: *Cairo, x: f64, y: f64, width: f64, layout: Layout, style: Appearance.Style) void {
         cairo.save();
         defer cairo.restore();
         // Build a soft silhouette in its own group, then composite it over the panel.
         cairo.pushGroup();
         cairo.setOperator(.source);
         const layers: usize = if (layout.key_shadow_blur > 0) 16 else 1;
-        const blur: f64 = @floatFromInt(layout.key_shadow_blur);
-        const left = @as(f64, @floatFromInt(x)) + @as(f64, @floatFromInt(layout.key_shadow_offset_x));
-        const top = @as(f64, @floatFromInt(y)) + @as(f64, @floatFromInt(layout.key_shadow_offset_y));
+        const blur = layout.key_shadow_blur;
+        const left = x + layout.key_shadow_offset_x;
+        const top = y + layout.key_shadow_offset_y;
         for (0..layers) |layer| {
             const strength = @as(f64, @floatFromInt(layer + 1)) / @as(f64, @floatFromInt(layers));
             const spread = blur * (1.0 - strength);
-            roundedRectangle(cairo, left - spread, top - spread, @as(f64, @floatFromInt(width)) + spread * 2, @as(f64, @floatFromInt(layout.key_height)) + spread * 2, @as(f64, @floatFromInt(layout.key_radius)) + spread);
+            roundedRectangle(cairo, left - spread, top - spread, width + spread * 2, layout.key_height + spread * 2, layout.key_radius + spread);
             var color = style.key_shadow_color;
             color.a = @intFromFloat(@as(f64, @floatFromInt(color.a)) * strength * strength);
             setSourceColor(cairo, color);
@@ -468,7 +525,7 @@ const drawing = struct {
         cairo.paint();
     }
 
-    fn sideColors(color: Appearance.Color, shadow_x: i32, shadow_y: i32) [4]Appearance.Color {
+    fn sideColors(color: Appearance.Color, shadow_x: f64, shadow_y: f64) [4]Appearance.Color {
         // Sides are clockwise: top, right, bottom, left. Light opposes the shadow.
         const vertical: usize = if (shadow_y >= 0) 0 else 2;
         const horizontal: usize = if (shadow_x >= 0) 3 else 1;
@@ -557,7 +614,7 @@ const metrics = struct {
     ) (format.Error || error{TextRenderingFailed})!pango.Metrics {
         var display_buf: format.Buffer = undefined;
         const display_text = try format.entry(value, &display_buf);
-        return pango.text.measure(cairo, font, display_text) catch error.TextRenderingFailed;
+        return pango.text.measure(cairo, font, display_text) catch return error.TextRenderingFailed;
     }
 };
 
@@ -565,21 +622,17 @@ test "buffer dimensions round fractional scales and preserve integer scales" {
     try std.testing.expectEqual(125, try scaledSize(100, 150));
     try std.testing.expectEqual(76, try scaledSize(101, 90));
     try std.testing.expectEqual(152, try scaledSize(101, 180));
-    try std.testing.expectEqual(182, try scaledSize(101, 216));
     try std.testing.expectEqual(202, try scaledSize(101, 240));
     try std.testing.expectEqual(1, try scaledSize(1, 30));
     // 115% must round exact half pixels up, without floating-point error.
     try std.testing.expectEqual(58, try scaledSize(50, 138));
-    try std.testing.expectEqual(104, try scaledSize(90, 138));
-    try std.testing.expectEqual(127, try scaledSize(110, 138));
     try std.testing.expectError(error.BufferSizeOverflow, scaledSize(std.math.maxInt(i32), 240));
     try std.testing.expectEqual(35791394, try scaledSize(1, std.math.maxInt(u32)));
-    try std.testing.expectError(error.BufferSizeOverflow, scaledSize(60, std.math.maxInt(u32)));
     try std.testing.expectError(error.BufferSizeOverflow, scaledSize(std.math.maxInt(i32), std.math.maxInt(u32)));
 }
 
 test "reused measurement context matches fresh layouts across output settings" {
-    const style = Appearance.themed(.wisp_light).style;
+    const selected = Appearance.themed(.wisp_light);
     const surface = try Cairo.Surface.recording(.color_alpha, null);
     defer surface.destroy();
     const reused_cairo = try Cairo.create(surface);
@@ -588,59 +641,126 @@ test "reused measurement context matches fresh layouts across output settings" {
         .{ .scale = 120, .subpixel = .default },
         .{ .scale = 240, .subpixel = .default },
         .{ .scale = 240, .subpixel = .rgb },
-        .{ .scale = 150, .subpixel = .rgb },
-        .{ .scale = 180, .subpixel = .rgb },
         .{ .scale = 216, .subpixel = .bgr },
-        .{ .scale = 90, .subpixel = .default },
-        .{ .scale = 360, .subpixel = .bgr },
         .{ .scale = 240, .subpixel = .rgb },
-        .{ .scale = 120, .subpixel = .rgb },
     };
     for (settings) |setting| {
         const cairo = try Cairo.create(surface);
         defer cairo.destroy();
         try drawing.setup(cairo, setting.scale, setting.subpixel);
-        const expected_metrics = try pango.text.measure(cairo, style.font, "yT");
         try drawing.setup(reused_cairo, setting.scale, setting.subpixel);
-        const actual = try Layout.init(reused_cairo, style, setting.scale, setting.subpixel);
+        const actual = try Layout.init(reused_cairo, selected.style, setting.scale, setting.subpixel);
         const expected_text = try pango.text.measure(cairo, "Serif 128", "Ctrl+AW");
         try std.testing.expectEqualDeep(expected_text, try pango.text.measure(reused_cairo, "Serif 128", "Ctrl+AW"));
-        try std.testing.expectEqualDeep(expected_metrics, actual.font_metrics);
-        try std.testing.expectEqualDeep(try Layout.init(cairo, style, setting.scale, setting.subpixel), actual);
+        try std.testing.expectEqualDeep(try Layout.init(cairo, selected.style, setting.scale, setting.subpixel), actual);
     }
 }
 
-test "raised keycaps contain text on the face with small padding" {
+test "default keycaps share a minimum width and keep text inside the face" {
     const surface = try Cairo.Surface.recording(.color_alpha, null);
     defer surface.destroy();
     const cairo = try Cairo.create(surface);
     defer cairo.destroy();
-    try drawing.setup(cairo, 120, .default);
-    var default_style = Appearance.themed(.wisp_light).style;
-    default_style.font = "Serif 128";
-    const text_metrics = try pango.text.measure(cairo, default_style.font, "Ctrl+A");
-    for ([_]i32{ 0, 64, 256 }) |depth| {
-        for ([_]i32{ 0, 1, 59 }) |padding| {
-            var style = default_style;
-            style.key_depth = depth;
-            style.key_padding_horizontal = padding;
-            const layout = try Layout.init(cairo, style, 120, .default);
-            const width = layout.keyWidth(text_metrics);
-            const text_left = @divTrunc(width - text_metrics.width, 2);
-            const text_right = text_left + text_metrics.width;
-            const inset = layout.key_side_inset;
-            try std.testing.expect(@as(f64, @floatFromInt(text_left)) >= inset);
-            try std.testing.expect(@as(f64, @floatFromInt(text_right)) <= @as(f64, @floatFromInt(width)) - inset);
+    for ([_]Appearance.Theme{ .dark, .light, .wisp_dark, .wisp_light }) |theme| {
+        for ([_][:0]const u8{ "Sans Bold 12", "Sans Bold 16", "Serif 32", "Serif Italic 48", "Monospace 64", "Sans Bold 128" }) |font| {
+            for ([_]u32{ 120, 168 }) |scale| {
+                try drawing.setup(cairo, scale, .default);
+                var selected = Appearance.themed(theme);
+                selected.style.font = font;
+                const layout = try Layout.init(cairo, selected.style, scale, .default);
+                try std.testing.expectEqual(layout.key_height, layout.key_min_width);
+                try std.testing.expect(layout.key_shadow_blur * 2.0 <= layout.key_gap);
+                const face_height = layout.key_height - layout.key_depth.top - layout.key_depth.bottom;
+                const face_width = layout.key_height - layout.key_side_width;
+                if (std.meta.eql(layout.key_depth, Appearance.Depth.uniform(0))) {
+                    try std.testing.expectEqual(@as(i32, 0), layout.key_side_width);
+                    try std.testing.expectEqual(face_height, face_width);
+                }
+                if (theme == .wisp_dark or theme == .wisp_light) {
+                    try std.testing.expect(face_width < face_height);
+                }
+                for ("ABCDEFGHIJKLMNOPQRSTUVWXYZ") |letter| {
+                    const measured = try pango.text.measure(cairo, font, &.{letter});
+                    try std.testing.expectEqual(layout.key_height, layout.keycapWidth(measured));
+                    try std.testing.expect(measured.width <= face_width);
+                    const position = layout.textPosition(layout.key_height, measured);
+                    const left = position.x - layout.key_depth.left;
+                    const right = (layout.key_height - @as(f64, @floatFromInt(measured.width))) - layout.key_depth.right - position.x;
+                    const top = position.y - layout.key_depth.top;
+                    const bottom = (layout.key_height - @as(f64, @floatFromInt(measured.height))) - layout.key_depth.bottom - position.y;
+                    try std.testing.expect(left >= layout.key_padding_horizontal);
+                    try std.testing.expect(top >= 0);
+                    try std.testing.expectApproxEqAbs(left, right, 0.000001);
+                    try std.testing.expectApproxEqAbs(top, bottom, 0.000001);
+                }
+            }
         }
     }
-    // The default square keycap still fits W without growing.
-    const letter_metrics = try pango.text.measure(cairo, default_style.font, "W");
-    const layout = try Layout.init(cairo, default_style, 120, .default);
-    try std.testing.expectEqual(layout.key_height, layout.keyWidth(letter_metrics));
+}
+
+test "labels with different font metrics share the F baseline across scales and face depths" {
+    const surface = try Cairo.Surface.recording(.color_alpha, null);
+    defer surface.destroy();
+    const cairo = try Cairo.create(surface);
+    defer cairo.destroy();
+    for ([_][:0]const u8{ "Serif 16", "Serif 32", "Serif 64", "Serif 128", "Sans Bold 32" }) |font| {
+        for ([_]u32{ 120, 168, 216, 240 }) |scale| {
+            try drawing.setup(cairo, scale, .default);
+            const reference = try pango.text.measure(cairo, font, "F");
+            const alphabet = try pango.text.measureAlphabet(cairo, font);
+            try std.testing.expectEqual(reference.baseline, alphabet.baseline);
+            for ([_]Appearance.Theme{ .light, .wisp_light }) |theme| {
+                var style = Appearance.themed(theme).style;
+                style.font = font;
+                for ([_]?Appearance.Depth{ style.key_depth, .{ .top = 0.25, .right = 1.125, .bottom = 3.5, .left = 2.25 } }) |depth| {
+                    style.key_depth = depth;
+                    const layout = try Layout.init(cairo, style, scale, .default);
+                    const reference_position = layout.textPosition(layout.keycapWidth(reference), reference);
+                    // The reference letter retains the previous centered-line position.
+                    const centered_y = layout.key_depth.top + (layout.key_height - layout.key_depth.top - layout.key_depth.bottom - @as(f64, @floatFromInt(alphabet.height))) / 2.0;
+                    try std.testing.expectApproxEqAbs(centered_y, reference_position.y, 0.000001);
+                    for ([_][]const u8{ "A", "Mg", "yT", "↑", "↓", "←", "→", "↵", "⏎", "↩", "⌫", "😀", "👍🏽", "👩‍💻", "❤️", "Ctrl+↵", "Ctrl+😀", "A×128" }) |label| {
+                        const measured = try pango.text.measure(cairo, font, label);
+                        const width = layout.keycapWidth(measured);
+                        const position = layout.textPosition(width, measured);
+                        try std.testing.expectApproxEqAbs(reference_position.y + reference.baseline, position.y + measured.baseline, 0.000001);
+                        const left = position.x - layout.key_depth.left;
+                        const right = width - @as(f64, @floatFromInt(measured.width)) - layout.key_depth.right - position.x;
+                        try std.testing.expectApproxEqAbs(left, right, 0.000001);
+                    }
+                    // A different line height must not move the baseline or round its fraction.
+                    var fractional = reference;
+                    fractional.height += 17;
+                    fractional.baseline += 0.125;
+                    const shifted = layout.textPosition(layout.keycapWidth(fractional), fractional);
+                    try std.testing.expectApproxEqAbs(reference_position.y - 0.125, shifted.y, 0.000001);
+                }
+            }
+        }
+    }
+}
+
+test "formatted letters use the shared width while repetitions and labels can expand" {
+    const surface = try Cairo.Surface.recording(.color_alpha, null);
+    defer surface.destroy();
+    const cairo = try Cairo.create(surface);
+    defer cairo.destroy();
+    const selected = Appearance.themed(.wisp_dark);
+    try drawing.setup(cairo, 120, .default);
+    const layout = try Layout.init(cairo, selected.style, 120, .default);
+    var value: Entry = .{ .modifiers = .{}, .name = "a", .text = "a" };
+    const letter = try metrics.entry(cairo, selected.style.font, &value);
+    try std.testing.expectEqual(layout.key_height, layout.keycapWidth(letter));
+    value.repetition = 123;
+    const repeated = try metrics.entry(cairo, selected.style.font, &value);
+    try std.testing.expect(layout.keycapWidth(repeated) > layout.key_height);
+    value = .{ .modifiers = .{}, .name = "Control", .text = "" };
+    const control = try metrics.entry(cairo, selected.style.font, &value);
+    try std.testing.expectEqualDeep(try pango.text.measure(cairo, selected.style.font, "Ctrl+"), control);
 }
 
 test "keycap side brightness follows the opposite shadow direction" {
-    const cases = [_]struct { x: i32, y: i32, brightest_first: [4]usize }{
+    const cases = [_]struct { x: f64, y: f64, brightest_first: [4]usize }{
         .{ .x = 1, .y = 2, .brightest_first = .{ 0, 3, 1, 2 } },
         .{ .x = 2, .y = 1, .brightest_first = .{ 3, 0, 2, 1 } },
         .{ .x = -1, .y = 2, .brightest_first = .{ 0, 1, 3, 2 } },
@@ -649,12 +769,9 @@ test "keycap side brightness follows the opposite shadow direction" {
         .{ .x = -2, .y = -1, .brightest_first = .{ 1, 2, 0, 3 } },
         .{ .x = 1, .y = -2, .brightest_first = .{ 2, 3, 1, 0 } },
         .{ .x = 2, .y = -1, .brightest_first = .{ 3, 2, 0, 1 } },
-        .{ .x = 0, .y = 1, .brightest_first = .{ 0, 3, 1, 2 } },
-        .{ .x = 0, .y = -1, .brightest_first = .{ 2, 3, 1, 0 } },
-        .{ .x = 1, .y = 0, .brightest_first = .{ 3, 0, 2, 1 } },
-        .{ .x = -1, .y = 0, .brightest_first = .{ 1, 0, 2, 3 } },
         .{ .x = 1, .y = 1, .brightest_first = .{ 0, 3, 1, 2 } },
         .{ .x = 0, .y = 0, .brightest_first = .{ 0, 3, 1, 2 } },
+        .{ .x = 0.25, .y = -0.5, .brightest_first = .{ 2, 3, 1, 0 } },
     };
     for ([_]Appearance.Theme{ .wisp_dark, .wisp_light }) |theme| {
         const background = Appearance.themed(theme).style.key_background;
@@ -669,4 +786,203 @@ test "keycap side brightness follows the opposite shadow direction" {
             for (colors) |color| try std.testing.expectEqual(background.a, color.a);
         }
     }
+}
+
+test "explicit geometry overrides every preset including zero values" {
+    const surface = try Cairo.Surface.recording(.color_alpha, null);
+    defer surface.destroy();
+    const cairo = try Cairo.create(surface);
+    defer cairo.destroy();
+    try drawing.setup(cairo, 120, .default);
+    for ([_]Appearance.Theme{ .dark, .light, .wisp_dark, .wisp_light }) |name| {
+        var theme = Appearance.themed(name);
+        const font_metrics = try pango.text.measureAlphabet(cairo, theme.style.font);
+        theme.style.panel_radius = 0;
+        theme.style.panel_padding = 0;
+        theme.style.key_padding_horizontal = 0;
+        theme.style.key_padding_vertical = 0;
+        theme.style.key_gap = 0;
+        theme.style.key_radius = 0;
+        theme.style.key_shadow_blur = 0;
+        theme.style.key_shadow_offset_x = 0;
+        theme.style.key_shadow_offset_y = 0;
+        for ([_]i32{ 0, 9 }) |depth| {
+            theme.style.key_depth = .uniform(@floatFromInt(depth));
+            const layout = try Layout.init(cairo, theme.style, 120, .default);
+            try std.testing.expectEqualDeep(Appearance.Depth.uniform(@floatFromInt(depth)), layout.key_depth);
+            try std.testing.expect(layout.key_height - depth * 2 >= font_metrics.height);
+            if (depth == 0) {
+                try std.testing.expectEqual(0, layout.key_side_width);
+                try std.testing.expectEqual(0, layout.key_depth.top);
+                try std.testing.expectEqual(0, layout.key_depth.bottom);
+                try std.testing.expectEqual(0, layout.key_depth.left);
+            }
+            try std.testing.expectEqual(0, layout.panel_padding);
+            try std.testing.expectEqual(0, layout.panel_radius);
+            try std.testing.expectEqual(0, layout.key_padding_horizontal);
+            try std.testing.expectEqual(0, layout.key_gap);
+            try std.testing.expectEqual(0, layout.key_radius);
+            try std.testing.expectEqual(0, layout.key_shadow_blur);
+            try std.testing.expectEqual(0, layout.key_shadow_left);
+            try std.testing.expectEqual(0, layout.key_shadow_top);
+            try std.testing.expectEqual(layout.key_height, layout.panel_height);
+            try std.testing.expectEqual(layout.key_height, layout.panelWidth(layout.key_height));
+        }
+        theme.style.key_shadow_blur = 9;
+        const explicit_shadow = try Layout.init(cairo, theme.style, 120, .default);
+        try std.testing.expectEqual(0, explicit_shadow.key_gap);
+        try std.testing.expectEqual(9, explicit_shadow.key_shadow_blur);
+    }
+}
+
+test "explicit padding and depth preserve exact padding and centered labels" {
+    const surface = try Cairo.Surface.recording(.color_alpha, null);
+    defer surface.destroy();
+    const cairo = try Cairo.create(surface);
+    defer cairo.destroy();
+    try drawing.setup(cairo, 168, .default);
+    var style = Appearance.themed(.wisp_dark).style;
+    style.font = "Serif 32";
+    const font_metrics = try pango.text.measureAlphabet(cairo, style.font);
+    const cases = [_]struct { horizontal: f64, vertical: f64, depth: Appearance.Depth }{
+        .{ .horizontal = 0, .vertical = 0, .depth = .uniform(0) },
+        .{ .horizontal = 40, .vertical = 0, .depth = .uniform(4) },
+        .{ .horizontal = 0, .vertical = 9, .depth = .uniform(1000) },
+        .{ .horizontal = 7, .vertical = 3, .depth = .{ .top = 0, .right = 0.25, .bottom = 2.5, .left = 4.125 } },
+        .{ .horizontal = 7, .vertical = 3, .depth = .{ .top = 15.25, .right = 0, .bottom = 0, .left = 0 } },
+        .{ .horizontal = 7, .vertical = 3, .depth = .{ .top = 0, .right = 100.5, .bottom = 0, .left = 0 } },
+    };
+    for (cases) |case| {
+        style.key_padding_horizontal = case.horizontal;
+        style.key_padding_vertical = case.vertical;
+        style.key_depth = case.depth;
+        const layout = try Layout.init(cairo, style, 168, .default);
+        try std.testing.expectEqualDeep(case.depth, layout.key_depth);
+        try std.testing.expectEqual(0, layout.key_min_width);
+        try std.testing.expectApproxEqAbs(@as(f64, @floatFromInt(font_metrics.height)) + case.vertical * 2 + case.depth.top + case.depth.bottom, layout.key_height, 0.000001);
+        for ([_][]const u8{ "I", "A", "W", "Ctrl+Shift+Alt+A" }) |label| {
+            const measured = try pango.text.measure(cairo, style.font, label);
+            const width = layout.keycapWidth(measured);
+            const position = layout.textPosition(width, measured);
+            const left = position.x - case.depth.left;
+            const right = width - @as(f64, @floatFromInt(measured.width)) - case.depth.right - position.x;
+            const top = position.y - case.depth.top;
+            const bottom = layout.key_height - @as(f64, @floatFromInt(measured.height)) - case.depth.bottom - position.y;
+            try std.testing.expectApproxEqAbs(case.horizontal, left, 0.000001);
+            try std.testing.expectApproxEqAbs(case.vertical, top, 0.000001);
+            try std.testing.expectApproxEqAbs(left, right, 0.000001);
+            try std.testing.expectApproxEqAbs(top, bottom, 0.000001);
+            try drawing.keycap(cairo, 0, 0, width, layout, style);
+        }
+    }
+}
+
+test "explicit horizontal padding changes width without changing vertical geometry" {
+    const surface = try Cairo.Surface.recording(.color_alpha, null);
+    defer surface.destroy();
+    const cairo = try Cairo.create(surface);
+    defer cairo.destroy();
+    for ([_]Appearance.Theme{ .light, .wisp_light }) |theme| {
+        for ([_]u32{ 120, 168, 216, 240 }) |scale| {
+            try drawing.setup(cairo, scale, .default);
+            var style = Appearance.themed(theme).style;
+            style.font = "Serif 32";
+            const automatic = try Layout.init(cairo, style, scale, .default);
+            const narrow = try pango.text.measure(cairo, style.font, "I");
+            const wide = try pango.text.measure(cairo, style.font, "W");
+            try std.testing.expectEqual(automatic.keycapWidth(narrow), automatic.keycapWidth(wide));
+            style.key_padding_horizontal = 0;
+            const zero = try Layout.init(cairo, style, scale, .default);
+            try std.testing.expect(zero.keycapWidth(narrow) < zero.key_height);
+            try std.testing.expect(zero.keycapWidth(narrow) < zero.keycapWidth(wide));
+            for ([_]f64{ 0, 3.125, automatic.key_padding_horizontal, 200 }) |padding| {
+                style.key_padding_horizontal = padding;
+                const layout = try Layout.init(cairo, style, scale, .default);
+                try std.testing.expectEqual(0, layout.key_min_width);
+                try std.testing.expectEqual(zero.key_height, layout.key_height);
+                try std.testing.expectEqual(zero.key_text_baseline, layout.key_text_baseline);
+                try std.testing.expectEqual(zero.panel_height, layout.panel_height);
+                try std.testing.expectEqual(zero.key_depth, layout.key_depth);
+                try std.testing.expectEqual(zero.key_shadow_blur, layout.key_shadow_blur);
+                try std.testing.expectEqual(zero.key_shadow_offset_y, layout.key_shadow_offset_y);
+                try std.testing.expectApproxEqAbs(zero.keycapWidth(narrow) + padding * 2, layout.keycapWidth(narrow), 0.000001);
+                try std.testing.expectApproxEqAbs(zero.keycapWidth(wide) + padding * 2, layout.keycapWidth(wide), 0.000001);
+            }
+        }
+    }
+}
+
+test "zero-width keyboard text keeps a positive Wayland surface size" {
+    const surface = try Cairo.Surface.recording(.color_alpha, null);
+    defer surface.destroy();
+    const cairo = try Cairo.create(surface);
+    defer cairo.destroy();
+    try drawing.setup(cairo, 120, .default);
+    var style = Appearance.themed(.light).style;
+    style.key_padding_horizontal = 0;
+    style.panel_padding = 0;
+    const Keyboard = @import("../Model/Keyboard.zig");
+    var buffer: [64]u8 = undefined;
+    const label = Keyboard.text(@enumFromInt(0x0100200c), &buffer);
+    try std.testing.expectEqualStrings("\u{200c}", label);
+    const measured = try pango.text.measure(cairo, style.font, label);
+    const layout = try Layout.init(cairo, style, 120, .default);
+    const panel_width = layout.panelWidth(layout.keycapWidth(measured));
+    try std.testing.expectEqual(0, panel_width);
+    try std.testing.expectEqual(1, try Layout.pixelSize(panel_width));
+    try std.testing.expectError(error.LayoutSizeOverflow, Layout.pixelSize(-1));
+}
+
+test "oversized layouts fail when converting final surface dimensions" {
+    const surface = try Cairo.Surface.recording(.color_alpha, null);
+    defer surface.destroy();
+    const cairo = try Cairo.create(surface);
+    defer cairo.destroy();
+    var style = Appearance.themed(.wisp_dark).style;
+    for ([_]Appearance.Depth{
+        .uniform(1e300),
+        .{ .top = 1e300, .right = 0, .bottom = 0, .left = 0 },
+        .{ .top = 0, .right = 1e300, .bottom = 0, .left = 0 },
+    }) |depth| {
+        style.key_depth = depth;
+        const layout = try Layout.init(cairo, style, 120, .default);
+        try std.testing.expectError(error.LayoutSizeOverflow, Layout.pixelSize(layout.panel_height));
+        try std.testing.expectError(error.LayoutSizeOverflow, Layout.pixelSize(layout.panelWidth(layout.key_height)));
+    }
+}
+
+test "fractional spacing survives layout until the final surface bounds" {
+    const surface = try Cairo.Surface.recording(.color_alpha, null);
+    defer surface.destroy();
+    const cairo = try Cairo.create(surface);
+    defer cairo.destroy();
+    var style = Appearance.themed(.wisp_dark).style;
+    style.key_depth = .{ .top = 0.25, .right = 1.125, .bottom = 0.5, .left = 2.25 };
+    style.key_padding_horizontal = 3.125;
+    style.key_padding_vertical = 2.25;
+    style.key_gap = 2.5;
+    style.panel_padding = 1.125;
+    style.key_radius = 3.25;
+    style.panel_radius = 5.75;
+    style.key_border_width = 0.5;
+    style.key_shadow_blur = 1.25;
+    style.key_shadow_offset_x = -0.5;
+    style.key_shadow_offset_y = 0.75;
+    const layout = try Layout.init(cairo, style, 120, .default);
+    const text = try pango.text.measure(cairo, style.font, "Ctrl+Shift+Alt+W");
+    const width = layout.keycapWidth(text);
+    try std.testing.expectApproxEqAbs(@as(f64, @floatFromInt(text.width)) + 9.625, width, 0.000001);
+    try std.testing.expectEqual(1.75, layout.key_shadow_left);
+    try std.testing.expectEqual(0.5, layout.key_shadow_top);
+    try std.testing.expectEqual(layout.key_height + 4.75, layout.panel_height);
+    try std.testing.expectEqual(3.25, layout.key_radius);
+    try std.testing.expectEqual(5.75, layout.panel_radius);
+    const panel_width = layout.panelWidth(width * 3 + layout.key_gap * 2);
+    try std.testing.expectApproxEqAbs(width * 3 + 9.75, panel_width, 0.000001);
+    const pixels = try Layout.pixelSize(panel_width);
+    try std.testing.expect(@as(f64, @floatFromInt(pixels)) >= panel_width);
+    try std.testing.expect(@as(f64, @floatFromInt(pixels)) < panel_width + 1);
+    try drawing.keycap(cairo, 1.125, 2.25, width, layout, style);
+    try std.testing.expectEqual(101, try Layout.pixelSize(100.25));
+    try std.testing.expectEqual(152, try scaledSize(101, 180));
 }

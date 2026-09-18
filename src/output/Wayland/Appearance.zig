@@ -40,28 +40,39 @@ pub const Position = enum {
     }
 };
 
+pub const Depth = struct {
+    top: f64,
+    right: f64,
+    bottom: f64,
+    left: f64,
+
+    pub fn uniform(value: f64) Depth {
+        return .{ .top = value, .right = value, .bottom = value, .left = value };
+    }
+};
+
 pub const Style = struct {
     max_width: i32 = 600,
 
     panel_background: Color,
     panel_border_color: Color,
-    panel_border_width: u32 = 2,
-    panel_radius: u32 = 12,
-    panel_padding: ?i32 = null,
+    panel_border_width: f64 = 2,
+    panel_radius: ?f64 = null,
+    panel_padding: ?f64 = null,
 
     key_background: Color,
     key_border_color: Color,
-    key_border_width: u32 = 1,
-    key_radius: ?u32 = null,
-    key_depth: ?i32 = null,
-    key_padding_horizontal: ?i32 = null,
-    key_padding_vertical: ?i32 = null,
-    key_gap: ?i32 = null,
+    key_border_width: f64 = 1,
+    key_radius: ?f64 = null,
+    key_depth: ?Depth = null,
+    key_padding_horizontal: ?f64 = null,
+    key_padding_vertical: ?f64 = null,
+    key_gap: ?f64 = null,
 
     key_shadow_color: Color,
-    key_shadow_blur: ?i32 = null,
-    key_shadow_offset_x: ?i32 = null,
-    key_shadow_offset_y: ?i32 = null,
+    key_shadow_blur: ?f64 = null,
+    key_shadow_offset_x: ?f64 = null,
+    key_shadow_offset_y: ?f64 = null,
 
     font: [:0]const u8 = "Sans Bold 16",
     text_color: Color,
@@ -91,9 +102,11 @@ fn themeStyle(theme: Theme) Style {
             .panel_border_color = .rgba(0x6E6A86FF),
             .key_background = .rgba(0x1F1D2EFF),
             .key_border_color = .rgba(0x524D65FF),
-            .key_radius = 6,
-            .key_depth = 0,
+            .key_depth = .uniform(0),
             .key_shadow_color = .rgba(0x00000000),
+            .key_shadow_blur = 0,
+            .key_shadow_offset_x = 0,
+            .key_shadow_offset_y = 0,
             .text_color = .rgba(0x908CAAFF),
             .text_highlight_color = .rgba(0xC4A7E7FF),
         },
@@ -102,9 +115,11 @@ fn themeStyle(theme: Theme) Style {
             .panel_border_color = .rgba(0x9893A5FF),
             .key_background = .rgba(0xFFFAF3FF),
             .key_border_color = .rgba(0xDED3C8FF),
-            .key_radius = 6,
-            .key_depth = 0,
+            .key_depth = .uniform(0),
             .key_shadow_color = .rgba(0x00000000),
+            .key_shadow_blur = 0,
+            .key_shadow_offset_x = 0,
+            .key_shadow_offset_y = 0,
             .text_color = .rgba(0x797593FF),
             .text_highlight_color = .rgba(0x907AA9FF),
         },

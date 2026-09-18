@@ -32,23 +32,26 @@ pub const USAGE =
     \\                                  corners: top-left, top-right,
     \\                                           bottom-left, bottom-right
     \\  -m, --margin PX                 distance from the anchored edge(s)
-    \\  -w, --max-width PX              maximum panel width (must be > 0)
+    \\  -w, --max-width PX              panel width limit (must be > 0)
+    \\                                  rounding may add 1px; the newest key is always shown in full
     \\  -f, --font FONT                 Pango font description
     \\  --panel-padding PX              padding between panel and keycaps
-    \\  --key-padding-horizontal PX     horizontal keycap padding
-    \\  --key-padding-vertical PX       vertical keycap padding
+    \\  --key-padding-horizontal PX     horizontal padding inside the keycap face
+    \\  --key-padding-vertical PX       vertical padding inside the keycap face
     \\  --key-gap PX                    gap between keycaps
     \\
     \\  --panel-background COLOR        panel background color
     \\  --panel-border-color COLOR      panel border color
     \\  --panel-border-width PX         panel border width; 0 disables border
-    \\  --panel-radius PX               panel corner radius; 0 makes it square
+    \\  --panel-radius PX               panel corner radius; 0 makes corners sharp
     \\
     \\  --key-background COLOR          key background color
-    \\  --key-border-color COLOR        key border color
-    \\  --key-border-width PX           key border width; 0 disables border
-    \\  --key-radius PX                 key corner radius; 0 makes it square
-    \\  --key-depth PX                  keycap thickness; 0 makes it flat
+    \\  --key-border-color COLOR        key outer border color
+    \\  --key-border-width PX           key outer border width; 0 disables outer border
+    \\  --key-radius PX                 key corner radius; 0 makes corners sharp
+    \\  --key-depth PX[,PX...]          1-4 comma-separated slope sizes; 0 makes it flat
+    \\                                  1: all; 2: vertical,horizontal; 3: top,horizontal,bottom
+    \\                                  4: top,right,bottom,left
     \\  --key-shadow-color COLOR        shadow color; alpha 00 disables shadow
     \\  --key-shadow-blur PX            shadow softness; 0 makes it sharp
     \\  --key-shadow-offset-x PX        horizontal shadow offset; may be negative
@@ -63,10 +66,10 @@ pub const USAGE =
     \\  --stdout-history COUNT          entries in each line (default: 1; must be > 0)
     \\  --stdout-emit-clear             emit an empty line when history clears
     \\
-    \\PX:    non-negative pixel value (except shadow offsets)
+    \\PX:    logical pixels; decimals allowed; --margin and --max-width require integers
+    \\       values must be non-negative, except shadow offsets
     \\FONT:  Pango font description (default: "Sans Bold 16")
     \\COLOR: RRGGBB or RRGGBBAA (FF is opaque, 00 is transparent)
-    \\Automatic dimensions follow font metrics; automatic key depth is half the font size.
     \\
     ;
 
@@ -292,17 +295,17 @@ fn applyWaylandOption(
             .key_gap => appearance.style.key_gap = parseSpacing(value) orelse return option.invalidValue(value),
             .panel_background => appearance.style.panel_background = parseColor(value) orelse return option.invalidValue(value),
             .panel_border_color => appearance.style.panel_border_color = parseColor(value) orelse return option.invalidValue(value),
-            .panel_border_width => appearance.style.panel_border_width = parseInt(u32, value) orelse return option.invalidValue(value),
-            .panel_radius => appearance.style.panel_radius = parseInt(u32, value) orelse return option.invalidValue(value),
+            .panel_border_width => appearance.style.panel_border_width = parseSpacing(value) orelse return option.invalidValue(value),
+            .panel_radius => appearance.style.panel_radius = parseSpacing(value) orelse return option.invalidValue(value),
             .key_background => appearance.style.key_background = parseColor(value) orelse return option.invalidValue(value),
             .key_border_color => appearance.style.key_border_color = parseColor(value) orelse return option.invalidValue(value),
-            .key_border_width => appearance.style.key_border_width = parseInt(u32, value) orelse return option.invalidValue(value),
-            .key_radius => appearance.style.key_radius = parseInt(u32, value) orelse return option.invalidValue(value),
-            .key_depth => appearance.style.key_depth = parseSpacing(value) orelse return option.invalidValue(value),
+            .key_border_width => appearance.style.key_border_width = parseSpacing(value) orelse return option.invalidValue(value),
+            .key_radius => appearance.style.key_radius = parseSpacing(value) orelse return option.invalidValue(value),
+            .key_depth => appearance.style.key_depth = parseDepth(value) orelse return option.invalidValue(value),
             .key_shadow_color => appearance.style.key_shadow_color = parseColor(value) orelse return option.invalidValue(value),
             .key_shadow_blur => appearance.style.key_shadow_blur = parseSpacing(value) orelse return option.invalidValue(value),
-            .key_shadow_offset_x => appearance.style.key_shadow_offset_x = parseInt(i32, value) orelse return option.invalidValue(value),
-            .key_shadow_offset_y => appearance.style.key_shadow_offset_y = parseInt(i32, value) orelse return option.invalidValue(value),
+            .key_shadow_offset_x => appearance.style.key_shadow_offset_x = parsePixels(value) orelse return option.invalidValue(value),
+            .key_shadow_offset_y => appearance.style.key_shadow_offset_y = parsePixels(value) orelse return option.invalidValue(value),
             .text_color => appearance.style.text_color = parseColor(value) orelse return option.invalidValue(value),
             .text_highlight_color => appearance.style.text_highlight_color = parseColor(value) orelse return option.invalidValue(value),
         },
@@ -397,8 +400,31 @@ fn parseInt(comptime T: type, value: []const u8) ?T {
     return std.fmt.parseInt(T, value, 10) catch null;
 }
 
-fn parseSpacing(value: []const u8) ?i32 {
-    const spacing = parseInt(i32, value) orelse return null;
+fn parseDepth(value: []const u8) ?WaylandOptions.Depth {
+    var parts = std.mem.splitScalar(u8, value, ',');
+    var sizes: [4]f64 = undefined;
+    var count: usize = 0;
+    while (parts.next()) |part| {
+        if (count == sizes.len) return null;
+        const size = parseSpacing(std.mem.trim(u8, part, " \t")) orelse return null;
+        sizes[count] = size;
+        count += 1;
+    }
+    return .{
+        .top = sizes[0],
+        .right = if (count > 1) sizes[1] else sizes[0],
+        .bottom = if (count > 2) sizes[2] else sizes[0],
+        .left = if (count > 3) sizes[3] else if (count > 1) sizes[1] else sizes[0],
+    };
+}
+
+fn parsePixels(value: []const u8) ?f64 {
+    const pixels = std.fmt.parseFloat(f64, value) catch return null;
+    return if (std.math.isFinite(pixels)) pixels else null;
+}
+
+fn parseSpacing(value: []const u8) ?f64 {
+    const spacing = parsePixels(value) orelse return null;
     return if (spacing >= 0) spacing else null;
 }
 
@@ -548,7 +574,7 @@ test "Wayland options override the selected theme" {
     try std.testing.expectEqual(10, appearance.style.key_padding_horizontal);
     try std.testing.expectEqual(5, appearance.style.key_padding_vertical);
     try std.testing.expectEqual(4, appearance.style.key_gap);
-    try std.testing.expectEqual(5, appearance.style.key_depth);
+    try std.testing.expectEqualDeep(WaylandOptions.Depth.uniform(5), appearance.style.key_depth.?);
     try std.testing.expectEqual(Color.rgba(0x00000060), appearance.style.key_shadow_color);
     try std.testing.expectEqual(6, appearance.style.key_shadow_blur);
     try std.testing.expectEqual(-2, appearance.style.key_shadow_offset_x);
@@ -658,4 +684,74 @@ test "backend-specific options require the matching backend" {
     };
     try std.testing.expectEqual(Diagnostic.Kind.wrong_backend, wayland.kind);
     try std.testing.expectEqual(Backend.wayland, wayland.backend);
+}
+
+test "key depth expands one to four sizes and overrides themes in either order" {
+    const cases = [_]struct { value: [:0]const u8, expected: WaylandOptions.Depth }{
+        .{ .value = "0", .expected = .uniform(0) },
+        .{ .value = "4", .expected = .uniform(4) },
+        .{ .value = "4,8", .expected = .{ .top = 4, .right = 8, .bottom = 4, .left = 8 } },
+        .{ .value = "4,8,6", .expected = .{ .top = 4, .right = 8, .bottom = 6, .left = 8 } },
+        .{ .value = "1,2,3,4", .expected = .{ .top = 1, .right = 2, .bottom = 3, .left = 4 } },
+        .{ .value = "0, 0.25, 2.5, 4.75", .expected = .{ .top = 0, .right = 0.25, .bottom = 2.5, .left = 4.75 } },
+    };
+    for (cases) |case| {
+        for ([_][:0]const u8{ "dark", "light", "wisp-dark", "wisp-light" }) |theme| {
+            const orders = [_][5][*:0]const u8{
+                .{ "test-cli", "--key-depth", case.value.ptr, "--theme", theme.ptr },
+                .{ "test-cli", "--theme", theme.ptr, "--key-depth", case.value.ptr },
+            };
+            for (orders) |args| {
+                const options = switch (parse(.{ .vector = &args })) {
+                    .run => |options| options,
+                    else => return error.UnexpectedResult,
+                };
+                try std.testing.expectEqualDeep(case.expected, options.output.wayland.style.key_depth.?);
+            }
+        }
+    }
+}
+
+test "key depth rejects malformed and nonfinite sizes" {
+    for ([_][:0]const u8{ "", ",", "1,", ",1", "1,,2", "1,2,3,4,5", "1:2:3:4", "1 2", "-1", "1,-2", "nan", "inf", "1,inf", "1e999", "4px" }) |value| {
+        const diagnostic = switch (parse(.{ .vector = &.{ "test-cli", "--key-depth", value } })) {
+            .diagnostic => |diagnostic| diagnostic,
+            else => return error.UnexpectedResult,
+        };
+        try std.testing.expectEqual(Diagnostic.Kind.invalid_value, diagnostic.kind);
+        try std.testing.expectEqualStrings("--key-depth", diagnostic.option);
+    }
+}
+
+test "pixel styles accept decimals while margin and max width remain integers" {
+    inline for (.{
+        .{ "--panel-padding", "panel_padding" },
+        .{ "--panel-radius", "panel_radius" },
+        .{ "--panel-border-width", "panel_border_width" },
+        .{ "--key-padding-horizontal", "key_padding_horizontal" },
+        .{ "--key-padding-vertical", "key_padding_vertical" },
+        .{ "--key-gap", "key_gap" },
+        .{ "--key-radius", "key_radius" },
+        .{ "--key-border-width", "key_border_width" },
+        .{ "--key-shadow-blur", "key_shadow_blur" },
+        .{ "--key-shadow-offset-x", "key_shadow_offset_x" },
+        .{ "--key-shadow-offset-y", "key_shadow_offset_y" },
+    }) |option| {
+        const options = switch (parse(.{ .vector = &.{ "test-cli", option[0], "1.25" } })) {
+            .run => |options| options,
+            else => return error.UnexpectedResult,
+        };
+        try std.testing.expectEqual(1.25, @field(options.output.wayland.style, option[1]));
+        for ([_][*:0]const u8{ "nan", "inf", "1e999" }) |value| {
+            const result = parse(.{ .vector = &.{ "test-cli", option[0], value } });
+            try std.testing.expectEqual(Diagnostic.Kind.invalid_value, result.diagnostic.kind);
+        }
+    }
+    for ([_][*:0]const u8{ "--margin", "--max-width" }) |option| {
+        const result = parse(.{ .vector = &.{ "test-cli", option, "1.25" } });
+        try std.testing.expectEqual(Diagnostic.Kind.invalid_value, result.diagnostic.kind);
+    }
+    const offsets = parse(.{ .vector = &.{ "test-cli", "--key-shadow-offset-x=-1.25", "--key-shadow-offset-y=-0.5" } }).run.output.wayland.style;
+    try std.testing.expectEqual(-1.25, offsets.key_shadow_offset_x);
+    try std.testing.expectEqual(-0.5, offsets.key_shadow_offset_y);
 }
