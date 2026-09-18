@@ -33,7 +33,7 @@ const Layout = struct {
 
     fn init(font_metrics: pango.Metrics, style: Appearance.Style) Layout {
         const text_height = font_metrics.height;
-        const key_padding_horizontal = style.key_padding_horizontal orelse fraction(text_height, 2);
+        const key_padding_horizontal = style.key_padding_horizontal orelse fraction(text_height, 4);
         const key_padding_vertical = style.key_padding_vertical orelse fraction(text_height, 4);
         const key_depth = style.key_depth orelse fraction(font_metrics.font_size, 2);
         const depth: f64 = @floatFromInt(key_depth);
@@ -287,8 +287,7 @@ const drawing = struct {
 
         cairo.setOperator(.over);
         const depth: f64 = @floatFromInt(layout.key_depth);
-        // Keep the side slopes within the horizontal padding.
-        const inset_x = @min(depth, @as(f64, @floatFromInt(layout.key_padding_horizontal)) * 0.6);
+        const inset_x = layout.key_top_slope * 1.5;
         const face_left = left + inset_x;
         const face_top = top + layout.key_top_slope;
         const face_right = left + w - inset_x;
