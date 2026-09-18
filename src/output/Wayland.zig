@@ -17,6 +17,7 @@ model: Model,
 client: *Client,
 renderer: Renderer,
 flush_pending: bool,
+dirty: bool = false,
 
 pub fn init(gpa: Allocator, appearance: Appearance) !Wayland {
     const client = try Client.create(gpa, appearance.position, appearance.margin);
@@ -53,24 +54,31 @@ pub fn fd(self: *const Wayland) c_int {
 
 pub fn dispatch(self: *Wayland) !void {
     try self.client.dispatch();
-    self.renderer.reap();
     const changes = self.client.state.takeChanges();
     if (changes.keymap)
         try self.model.setSerializedKeymap(self.client.serializedKeymap());
-    if (changes.render)
-        try self.render();
+    if (changes.render) {
+        // Actual configure/output changes invalidate the old drawing schedule.
+        self.client.layer.cancelFrame();
+        self.dirty = true;
+    }
+    // Either callback completion or buffer release may make the latest view drawable.
+    try self.tryRender();
     try self.flush();
 }
 
 pub fn handle(self: *Wayland, event: protocol.Event) !void {
     if (try self.model.handle(event) != .changed) return;
-    try self.render();
+    self.dirty = true;
+    try self.tryRender();
     try self.flush();
 }
 
 pub fn clear(self: *Wayland) !void {
     self.model.clear();
-    try self.render();
+    self.client.layer.cancelFrame();
+    self.dirty = true;
+    try self.tryRender();
     try self.flush();
 }
 
@@ -87,12 +95,14 @@ pub fn flush(self: *Wayland) FlushError!void {
     }
 }
 
-fn render(self: *Wayland) !void {
-    try self.renderer.render(.{
+fn tryRender(self: *Wayland) !void {
+    if (!self.dirty or self.client.layer.frame_callback != null or !self.renderer.canRender()) return;
+    const result = try self.renderer.render(.{
         .keys = self.model.view(),
         .scale = self.client.scale(),
         .subpixel = subpixelToCairo(self.client.subpixel()),
     });
+    if (result == .submitted) self.dirty = false;
 }
 
 fn subpixelToCairo(subpixel: anytype) Cairo.SubpixelOrder {
@@ -108,4 +118,19 @@ fn subpixelToCairo(subpixel: anytype) Cairo.SubpixelOrder {
 test {
     _ = Client;
     _ = Renderer;
+}
+
+test "pending frame callbacks coalesce inputs without borrowing an old model view" {
+    var client: Client = undefined;
+    // Never dispatched/destroyed: this sentinel only marks an outstanding callback.
+    var callback_token: u8 = 0;
+    client.layer.frame_callback = @ptrCast(&callback_token);
+    var wayland: Wayland = undefined;
+    wayland.client = &client;
+    wayland.dirty = true;
+    try wayland.tryRender();
+    try std.testing.expect(wayland.dirty);
+    wayland.dirty = false;
+    try wayland.tryRender();
+    try std.testing.expect(!wayland.dirty);
 }

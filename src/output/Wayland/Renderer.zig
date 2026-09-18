@@ -179,13 +179,12 @@ pub const Options = struct {
 
 const Frame = struct {
     buffer: ShmBuffer,
-    released: bool = false,
-    next: ?*Frame = null,
+    busy: bool = false,
 
     fn listener(buffer: *wl.Buffer, event: wl.Buffer.Event, self: *Frame) void {
         _ = buffer;
         switch (event) {
-            .release => self.released = true,
+            .release => self.busy = false,
         }
     }
 };
@@ -198,7 +197,8 @@ measure_cairo: *Cairo,
 layout: Layout,
 cache: KeyCache = .{},
 active: KeyCache = .{},
-pending_frames: ?*Frame = null,
+// Heap-owned slots keep listener addresses stable when Renderer moves.
+frames: [2]?*Frame = .{ null, null },
 
 gpa: Allocator,
 
@@ -229,30 +229,52 @@ pub fn deinit(self: *Renderer) void {
     self.active.clear(self.gpa);
     self.measure_cairo.destroy();
     self.measure_surface.destroy();
-    var frame = self.pending_frames;
-    while (frame) |item| {
-        const next = item.next;
-        item.buffer.deinit();
-        self.gpa.destroy(item);
-        frame = next;
+    for (self.frames) |slot| {
+        if (slot) |frame| {
+            frame.buffer.deinit();
+            self.gpa.destroy(frame);
+        }
     }
 }
 
-pub fn reap(self: *Renderer) void {
-    var link = &self.pending_frames;
-    while (link.*) |frame| {
-        if (!frame.released) {
-            link = &frame.next;
-            continue;
-        }
-        link.* = frame.next;
-        frame.buffer.deinit();
-        self.gpa.destroy(frame);
+pub fn canRender(self: *const Renderer) bool {
+    for (self.frames) |slot| {
+        if (slot == null or !slot.?.busy) return true;
     }
+    return false;
 }
+
+fn acquireFrame(self: *Renderer, width: i32, height: i32) RenderError!?*Frame {
+    for (self.frames) |slot| {
+        if (slot) |frame| {
+            if (!frame.busy and frame.buffer.width == width and frame.buffer.height == height) return frame;
+        }
+    }
+    for (&self.frames) |*slot| {
+        if (slot.*) |frame| {
+            if (frame.busy) continue;
+            // Allocate first so a failed resize leaves the previous slot intact.
+            const buffer = try ShmBuffer.init(self.shm, width, height, .argb8888);
+            frame.buffer.deinit();
+            frame.buffer = buffer;
+            frame.buffer.setListener(*Frame, Frame.listener, frame);
+            return frame;
+        }
+        const frame = try self.gpa.create(Frame);
+        errdefer self.gpa.destroy(frame);
+        frame.* = .{ .buffer = try ShmBuffer.init(self.shm, width, height, .argb8888) };
+        frame.buffer.setListener(*Frame, Frame.listener, frame);
+        slot.* = frame;
+        return frame;
+    }
+    return null;
+}
+
+pub const RenderResult = enum { submitted, deferred };
 
 pub const RenderError = ShmBuffer.InitError || Cairo.CreateError || format.Error || error{ TextRenderingFailed, LayoutSizeOverflow };
-pub fn render(self: *Renderer, options: Options) RenderError!void {
+pub fn render(self: *Renderer, options: Options) RenderError!RenderResult {
+    if (!self.canRender()) return .deferred;
     const style = self.style;
     const target = self.target;
     const scale = if (options.scale > 0) options.scale else 120;
@@ -300,18 +322,8 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
         target.setSize(new_w, new_h);
     }
 
-    // 3. Create a frame buffer.
-    const frame = try self.gpa.create(Frame);
-    errdefer self.gpa.destroy(frame);
-    frame.* = .{
-        .buffer = try .init(
-            self.shm,
-            buffer_width,
-            buffer_height,
-            .argb8888,
-        ),
-    };
-    errdefer frame.buffer.deinit();
+    // 3. Reuse a released buffer; resize only an idle slot.
+    const frame = (try self.acquireFrame(buffer_width, buffer_height)).?;
 
     // 4. Draw directly into the frame buffer.
     const buffer_cairo = frame.buffer.cairo;
@@ -364,10 +376,6 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
         }
     }
 
-    frame.next = self.pending_frames;
-    self.pending_frames = frame;
-    frame.buffer.setListener(*Frame, Frame.listener, frame);
-
     // 5. Commit.
     if (target.preferred_scale != null) {
         target.viewport.?.setDestination(logical_width, logical_height);
@@ -375,9 +383,13 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
     } else {
         target.surface.setBufferScale(@intCast(scale / 120));
     }
+    // An empty transparent surface must not leave a callback blocking its next show.
+    if (end > 0) try target.requestFrame();
     target.surface.attach(frame.buffer.buffer, 0, 0);
     target.surface.damageBuffer(0, 0, frame.buffer.width, frame.buffer.height);
+    frame.busy = true;
     target.surface.commit();
+    return .submitted;
 }
 
 fn updateLayout(self: *Renderer, scale: u32, subpixel: Cairo.SubpixelOrder) RenderError!void {
@@ -1496,4 +1508,26 @@ test "repeat reuses active geometry at fractional origins and history retains ph
     try std.testing.expect(one != two);
     try std.testing.expect(two.background == null);
     try std.testing.expectEqual(face, (try renderer.cachedKey(historical, phase)).face.?.bitmap.surface);
+}
+
+test "two busy buffers defer without accessing the view and release makes a slot reusable" {
+    var frames = [_]Frame{
+        .{ .buffer = undefined, .busy = true },
+        .{ .buffer = undefined, .busy = true },
+    };
+    var renderer: Renderer = undefined;
+    renderer.frames = .{ &frames[0], &frames[1] };
+    try std.testing.expectEqual(RenderResult.deferred, try renderer.render(undefined));
+    try std.testing.expect((try renderer.acquireFrame(100, 50)) == null);
+    Frame.listener(undefined, .release, &frames[0]);
+    frames[0].buffer.width = 100;
+    frames[0].buffer.height = 50;
+    try std.testing.expect(renderer.canRender());
+    try std.testing.expectEqual(&frames[0], (try renderer.acquireFrame(100, 50)).?);
+    try std.testing.expect(frames[1].busy);
+    frames[0].busy = true;
+    Frame.listener(undefined, .release, &frames[1]);
+    frames[1].buffer.width = 100;
+    frames[1].buffer.height = 50;
+    try std.testing.expectEqual(&frames[1], (try renderer.acquireFrame(100, 50)).?);
 }

@@ -19,6 +19,7 @@ fractional_scale: ?*wp.FractionalScaleV1 = null,
 preferred_scale: ?u32 = null,
 width: u32 = 0,
 height: u32 = 0,
+frame_callback: ?*wl.Callback = null,
 
 /// Creates an overlay layer surface with an empty input region.
 pub fn init(compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, options: Options) !LayerSurface {
@@ -51,6 +52,7 @@ pub fn init(compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, options
 }
 
 pub fn deinit(self: *LayerSurface) void {
+    self.cancelFrame();
     if (self.fractional_scale) |value| value.destroy();
     if (self.viewport) |value| value.destroy();
     self.layer_surface.destroy();
@@ -59,4 +61,27 @@ pub fn deinit(self: *LayerSurface) void {
 
 pub fn setSize(self: *LayerSurface, width: u32, height: u32) void {
     self.layer_surface.setSize(width, height);
+}
+
+/// The listener points into the heap-owned Client, not the movable Renderer.
+/// The request takes effect with the next surface commit.
+pub fn requestFrame(self: *LayerSurface) error{OutOfMemory}!void {
+    if (self.frame_callback != null) return;
+    const callback = try self.surface.frame();
+    callback.setListener(*LayerSurface, frameDone, self);
+    self.frame_callback = callback;
+}
+
+pub fn cancelFrame(self: *LayerSurface) void {
+    if (self.frame_callback) |callback| callback.destroy();
+    self.frame_callback = null;
+}
+
+fn frameDone(callback: *wl.Callback, event: wl.Callback.Event, self: *LayerSurface) void {
+    switch (event) {
+        .done => {
+            callback.destroy();
+            self.frame_callback = null;
+        },
+    }
 }
