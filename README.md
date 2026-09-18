@@ -20,7 +20,7 @@ System dependencies:
 
 Build-only dependency:
 
-- `wayland-protocols` — needed to generate the `xdg-shell` protocol bindings at build time, not required at runtime.
+- `wayland-protocols` — needed to generate the `xdg-shell`, `viewporter`, and `fractional-scale-v1` protocol bindings at build time, not required at runtime.
 
 ## Install
 

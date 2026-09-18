@@ -5,6 +5,7 @@ const system = std.posix.system;
 
 const project = @import("project");
 const wl = @import("wayland").client.wl;
+const wp = @import("wayland").client.wp;
 const zwlr = @import("wayland").client.zwlr;
 
 const LayerSurface = @import("LayerSurface.zig");
@@ -43,6 +44,8 @@ state: State = .{},
 compositor: ?*wl.Compositor = null,
 shm: ?*wl.Shm = null,
 layer_shell: ?*zwlr.LayerShellV1 = null,
+viewporter: ?*wp.Viewporter = null,
+fractional_scale_manager: ?*wp.FractionalScaleManagerV1 = null,
 
 seat: ?*wl.Seat = null,
 keyboard: ?*wl.Keyboard = null,
@@ -74,12 +77,13 @@ pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client
     };
     self.display = wl.Display.connect(null) catch return error.WaylandConnectFailed;
     errdefer self.display.disconnect();
+    errdefer self.releaseScaleManagers();
     errdefer self.outputs.deinit();
     errdefer if (self.keymap) |keymap| gpa.free(keymap);
 
     self.registry = try self.display.getRegistry();
     errdefer self.registry.destroy();
-    _ = self.registry.setListener(*Client, listeners.registry, self);
+    self.registry.setListener(*Client, listeners.registry, self);
     try self.roundtrip();
 
     if (self.compositor == null) return error.CompositorNotAdvertised;
@@ -88,7 +92,7 @@ pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client
     if (self.layer_shell == null) return error.LayerShellNotAdvertised;
 
     errdefer self.releaseSeat();
-    _ = self.seat.?.setListener(*Client, listeners.seat, self);
+    self.seat.?.setListener(*Client, listeners.seat, self);
     try self.roundtrip();
     if (self.keyboard == null) return error.KeyboardCapabilityUnavailable;
     try self.roundtrip();
@@ -98,11 +102,16 @@ pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client
         .anchor = position.anchor(),
         .margin = margin,
         .namespace = project.name ++ "-keys",
+        .viewporter = self.viewporter,
+        .fractional_scale_manager = self.fractional_scale_manager,
     });
     errdefer self.layer.deinit();
 
-    _ = self.layer.layer_surface.setListener(*Client, listeners.layerSurface, self);
-    _ = self.layer.surface.setListener(*Client, listeners.surface, self);
+    self.layer.layer_surface.setListener(*Client, listeners.layerSurface, self);
+    self.layer.surface.setListener(*Client, listeners.surface, self);
+    if (self.layer.fractional_scale) |fractional_scale| {
+        fractional_scale.setListener(*Client, listeners.fractionalScale, self);
+    }
     try self.roundtrip();
     self.state.changes = .{};
     return self;
@@ -110,6 +119,7 @@ pub fn create(gpa: Allocator, position: Position, margin: i32) InitError!*Client
 
 pub fn destroy(self: *Client) void {
     self.layer.deinit();
+    self.releaseScaleManagers();
     self.releaseSeat();
     if (self.keymap) |keymap| self.gpa.free(keymap);
     self.outputs.deinit();
@@ -118,8 +128,11 @@ pub fn destroy(self: *Client) void {
     self.gpa.destroy(self);
 }
 
-pub fn scale(self: *const Client) i32 {
-    return if (self.outputs.current) |o| o.scale else 1;
+/// The scale is the numerator of a fraction with a denominator of 120
+pub fn scale(self: *const Client) u32 {
+    if (self.layer.preferred_scale) |preferred| return preferred;
+    const output_scale = if (self.outputs.current) |o| @max(1, o.scale) else 1;
+    return @intCast(output_scale * 120);
 }
 
 pub fn subpixel(self: *const Client) wl.Output.Subpixel {
@@ -147,6 +160,11 @@ const RoundtripError = State.Error || error{WaylandRoundtripFailed};
 fn roundtrip(self: *Client) RoundtripError!void {
     if (self.display.roundtrip() != .SUCCESS) return error.WaylandRoundtripFailed;
     if (self.state.takeError()) |err| return err;
+}
+
+fn releaseScaleManagers(self: *Client) void {
+    if (self.fractional_scale_manager) |manager| manager.destroy();
+    if (self.viewporter) |viewporter| viewporter.destroy();
 }
 
 fn releaseSeat(self: *Client) void {
@@ -206,6 +224,20 @@ const listeners = struct {
                         client.state.fail(err);
                         return;
                     };
+                } else if (isInterface(ev.interface, wp.Viewporter)) {
+                    if (client.viewporter != null) return;
+                    const version = negotiatedVersion(wp.Viewporter, ev.version, 1) orelse return;
+                    client.viewporter = proxy.bind(ev.name, wp.Viewporter, version) catch |err| {
+                        client.state.fail(err);
+                        return;
+                    };
+                } else if (isInterface(ev.interface, wp.FractionalScaleManagerV1)) {
+                    if (client.fractional_scale_manager != null) return;
+                    const version = negotiatedVersion(wp.FractionalScaleManagerV1, ev.version, 1) orelse return;
+                    client.fractional_scale_manager = proxy.bind(ev.name, wp.FractionalScaleManagerV1, version) catch |err| {
+                        client.state.fail(err);
+                        return;
+                    };
                 } else if (isInterface(ev.interface, wl.Output)) {
                     const version = negotiatedVersion(wl.Output, ev.version, 2) orelse return;
                     const output_proxy = proxy.bind(ev.name, wl.Output, version) catch |err| {
@@ -217,7 +249,7 @@ const listeners = struct {
                         client.state.fail(err);
                         return;
                     };
-                    _ = output_proxy.setListener(*Client, listeners.output, client);
+                    output_proxy.setListener(*Client, listeners.output, client);
                 }
             },
             .global_remove => |ev| {
@@ -248,7 +280,7 @@ const listeners = struct {
                     return;
                 };
                 client.keyboard = keyboard_proxy;
-                _ = keyboard_proxy.setListener(*Client, listeners.keyboard, client);
+                keyboard_proxy.setListener(*Client, listeners.keyboard, client);
             },
             .name => {},
         }
@@ -321,6 +353,18 @@ const listeners = struct {
         }
     }
 
+    fn fractionalScale(proxy: *wp.FractionalScaleV1, event: wp.FractionalScaleV1.Event, client: *Client) void {
+        _ = proxy;
+        switch (event) {
+            .preferred_scale => |ev| {
+                if (ev.scale == 0) return;
+                if (client.layer.preferred_scale == ev.scale) return;
+                client.layer.preferred_scale = ev.scale;
+                client.state.changes.render = true;
+            },
+        }
+    }
+
     fn output(proxy: *wl.Output, event: wl.Output.Event, client: *Client) void {
         const tracked = client.outputs.find(proxy) orelse return;
         var changed = false;
@@ -338,3 +382,32 @@ const listeners = struct {
         if (changed and client.outputs.current == tracked) client.state.changes.render = true;
     }
 };
+
+test "surface preferred scale overrides integer output fallback and requests redraw" {
+    var client: Client = .{
+        .gpa = std.testing.allocator,
+        .display = undefined,
+        .registry = undefined,
+        .outputs = .init(std.testing.allocator),
+        .layer = .{ .surface = undefined, .layer_surface = undefined },
+    };
+    try std.testing.expectEqual(@as(u32, 120), client.scale());
+
+    var output: Outputs.Output = .{ .name = 1, .proxy = undefined, .scale = 2 };
+    client.outputs.current = &output;
+    try std.testing.expectEqual(@as(u32, 240), client.scale());
+
+    listeners.fractionalScale(undefined, .{ .preferred_scale = .{ .scale = 216 } }, &client);
+    try std.testing.expectEqual(@as(?u32, 216), client.layer.preferred_scale);
+    try std.testing.expectEqual(@as(u32, 216), client.scale());
+    try std.testing.expect(client.state.takeChanges().render);
+
+    output.scale = 3;
+    try std.testing.expectEqual(@as(u32, 216), client.scale());
+    listeners.fractionalScale(undefined, .{ .preferred_scale = .{ .scale = 216 } }, &client);
+    try std.testing.expect(!client.state.takeChanges().render);
+
+    listeners.fractionalScale(undefined, .{ .preferred_scale = .{ .scale = 150 } }, &client);
+    try std.testing.expectEqual(@as(u32, 150), client.scale());
+    try std.testing.expect(client.state.takeChanges().render);
+}

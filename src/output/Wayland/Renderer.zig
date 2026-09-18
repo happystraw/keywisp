@@ -15,7 +15,7 @@ const ShmBuffer = @import("ShmBuffer.zig");
 const Renderer = @This();
 
 const Layout = struct {
-    scale: i32,
+    scale: u32,
     subpixel: Cairo.SubpixelOrder,
     font_metrics: pango.Metrics,
     panel_padding: i32,
@@ -37,7 +37,7 @@ const Layout = struct {
     key_shadow_top: i32,
     key_shadow_bottom: i32,
 
-    fn init(cairo: *Cairo, style: Appearance.Style, scale: i32, subpixel: Cairo.SubpixelOrder) error{TextRenderingFailed}!Layout {
+    fn init(cairo: *Cairo, style: Appearance.Style, scale: u32, subpixel: Cairo.SubpixelOrder) error{TextRenderingFailed}!Layout {
         const font_metrics = pango.text.measure(cairo, style.font, "yT") catch return error.TextRenderingFailed;
 
         const text_height = font_metrics.height;
@@ -107,7 +107,7 @@ const Layout = struct {
 
 pub const Options = struct {
     keys: Model.View,
-    scale: i32,
+    scale: u32,
     subpixel: Cairo.SubpixelOrder,
 };
 
@@ -135,8 +135,8 @@ pending_frames: ?*Frame = null,
 gpa: Allocator,
 
 pub const InitError = Cairo.CreateError || error{TextRenderingFailed};
-pub fn init(gpa: Allocator, style: Appearance.Style, shm: *wl.Shm, target: *LayerSurface, scale: i32, subpixel: Cairo.SubpixelOrder) InitError!Renderer {
-    const effective_scale = if (scale > 0) scale else 1;
+pub fn init(gpa: Allocator, style: Appearance.Style, shm: *wl.Shm, target: *LayerSurface, scale: u32, subpixel: Cairo.SubpixelOrder) InitError!Renderer {
+    const effective_scale = if (scale > 0) scale else 120;
     const measure_surface = try Cairo.Surface.recording(.color_alpha, null);
     errdefer measure_surface.destroy();
     const measure_cairo = try Cairo.create(measure_surface);
@@ -185,7 +185,7 @@ pub const RenderError = ShmBuffer.InitError || Cairo.CreateError || format.Error
 pub fn render(self: *Renderer, options: Options) RenderError!void {
     const style = self.style;
     const target = self.target;
-    const scale = if (options.scale > 0) options.scale else 1;
+    const scale = if (options.scale > 0) options.scale else 120;
 
     // 1. Measure the content in logical pixels.
     const measure_cairo = self.measure_cairo;
@@ -223,8 +223,8 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
 
     const new_w: u32 = @intCast(bounds.width);
     const new_h: u32 = @intCast(bounds.height);
-    const buffer_width = std.math.mul(i32, bounds.width, scale) catch return error.BufferSizeOverflow;
-    const buffer_height = std.math.mul(i32, bounds.height, scale) catch return error.BufferSizeOverflow;
+    const buffer_width = try scaledSize(bounds.width, scale);
+    const buffer_height = try scaledSize(bounds.height, scale);
 
     // 2. Size changed → request a new layer surface size
     if (new_w != target.width or new_h != target.height) {
@@ -305,10 +305,20 @@ pub fn render(self: *Renderer, options: Options) RenderError!void {
     frame.buffer.setListener(*Frame, Frame.listener, frame);
 
     // 5. Commit.
-    target.surface.setBufferScale(scale);
+    if (target.preferred_scale != null) {
+        target.viewport.?.setDestination(bounds.width, bounds.height);
+        target.surface.setBufferScale(1);
+    } else {
+        target.surface.setBufferScale(@intCast(scale / 120));
+    }
     target.surface.attach(frame.buffer.buffer, 0, 0);
     target.surface.damageBuffer(0, 0, frame.buffer.width, frame.buffer.height);
     target.surface.commit();
+}
+
+fn scaledSize(logical_size: i32, scale_numerator: u32) error{BufferSizeOverflow}!i32 {
+    const product = @as(u64, @intCast(logical_size)) * scale_numerator;
+    return std.math.cast(i32, @max(1, (product + 60) / 120)) orelse error.BufferSizeOverflow;
 }
 
 const drawing = struct {
@@ -523,11 +533,11 @@ const drawing = struct {
 
     fn setup(
         cairo: *Cairo,
-        scale: i32,
+        scale: u32,
         subpixel: Cairo.SubpixelOrder,
     ) !void {
-        const factor: f64 = @floatFromInt(scale);
         cairo.identityMatrix();
+        const factor = @as(f64, @floatFromInt(scale)) / 120.0;
         cairo.scale(factor, factor);
         cairo.setAntialias(.best);
         const fo = try Cairo.FontOptions.create();
@@ -551,19 +561,40 @@ const metrics = struct {
     }
 };
 
+test "buffer dimensions round fractional scales and preserve integer scales" {
+    try std.testing.expectEqual(125, try scaledSize(100, 150));
+    try std.testing.expectEqual(76, try scaledSize(101, 90));
+    try std.testing.expectEqual(152, try scaledSize(101, 180));
+    try std.testing.expectEqual(182, try scaledSize(101, 216));
+    try std.testing.expectEqual(202, try scaledSize(101, 240));
+    try std.testing.expectEqual(1, try scaledSize(1, 30));
+    // 115% must round exact half pixels up, without floating-point error.
+    try std.testing.expectEqual(58, try scaledSize(50, 138));
+    try std.testing.expectEqual(104, try scaledSize(90, 138));
+    try std.testing.expectEqual(127, try scaledSize(110, 138));
+    try std.testing.expectError(error.BufferSizeOverflow, scaledSize(std.math.maxInt(i32), 240));
+    try std.testing.expectEqual(35791394, try scaledSize(1, std.math.maxInt(u32)));
+    try std.testing.expectError(error.BufferSizeOverflow, scaledSize(60, std.math.maxInt(u32)));
+    try std.testing.expectError(error.BufferSizeOverflow, scaledSize(std.math.maxInt(i32), std.math.maxInt(u32)));
+}
+
 test "reused measurement context matches fresh layouts across output settings" {
     const style = Appearance.themed(.wisp_light).style;
     const surface = try Cairo.Surface.recording(.color_alpha, null);
     defer surface.destroy();
     const reused_cairo = try Cairo.create(surface);
     defer reused_cairo.destroy();
-    const settings = [_]struct { scale: i32, subpixel: Cairo.SubpixelOrder }{
-        .{ .scale = 1, .subpixel = .default },
-        .{ .scale = 2, .subpixel = .default },
-        .{ .scale = 2, .subpixel = .rgb },
-        .{ .scale = 3, .subpixel = .bgr },
-        .{ .scale = 2, .subpixel = .rgb },
-        .{ .scale = 1, .subpixel = .rgb },
+    const settings = [_]struct { scale: u32, subpixel: Cairo.SubpixelOrder }{
+        .{ .scale = 120, .subpixel = .default },
+        .{ .scale = 240, .subpixel = .default },
+        .{ .scale = 240, .subpixel = .rgb },
+        .{ .scale = 150, .subpixel = .rgb },
+        .{ .scale = 180, .subpixel = .rgb },
+        .{ .scale = 216, .subpixel = .bgr },
+        .{ .scale = 90, .subpixel = .default },
+        .{ .scale = 360, .subpixel = .bgr },
+        .{ .scale = 240, .subpixel = .rgb },
+        .{ .scale = 120, .subpixel = .rgb },
     };
     for (settings) |setting| {
         const cairo = try Cairo.create(surface);
@@ -584,7 +615,7 @@ test "raised keycaps contain text on the face with small padding" {
     defer surface.destroy();
     const cairo = try Cairo.create(surface);
     defer cairo.destroy();
-    try drawing.setup(cairo, 1, .default);
+    try drawing.setup(cairo, 120, .default);
     var default_style = Appearance.themed(.wisp_light).style;
     default_style.font = "Serif 128";
     const text_metrics = try pango.text.measure(cairo, default_style.font, "Ctrl+A");
@@ -593,7 +624,7 @@ test "raised keycaps contain text on the face with small padding" {
             var style = default_style;
             style.key_depth = depth;
             style.key_padding_horizontal = padding;
-            const layout = try Layout.init(cairo, style, 1, .default);
+            const layout = try Layout.init(cairo, style, 120, .default);
             const width = layout.keyWidth(text_metrics);
             const text_left = @divTrunc(width - text_metrics.width, 2);
             const text_right = text_left + text_metrics.width;
@@ -604,7 +635,7 @@ test "raised keycaps contain text on the face with small padding" {
     }
     // The default square keycap still fits W without growing.
     const letter_metrics = try pango.text.measure(cairo, default_style.font, "W");
-    const layout = try Layout.init(cairo, default_style, 1, .default);
+    const layout = try Layout.init(cairo, default_style, 120, .default);
     try std.testing.expectEqual(layout.key_height, layout.keyWidth(letter_metrics));
 }
 
