@@ -24,8 +24,10 @@ keyboard: Keyboard,
 gpa: Allocator,
 
 pub const Change = enum { none, changed };
+pub const default_capacity = 32;
+
 pub const Options = struct {
-    capacity: usize = 64,
+    capacity: usize = default_capacity,
     keymap: Keymap = .environment,
     collapse_repetitions: bool = true,
 };
@@ -62,9 +64,9 @@ pub const View = struct {
     }
 };
 
-pub const InitError = Allocator.Error || Keyboard.InitError || error{InvalidCapacity};
+pub const InitError = Allocator.Error || Keyboard.InitError;
 pub fn init(gpa: Allocator, options: Options) InitError!Model {
-    if (options.capacity == 0) return error.InvalidCapacity;
+    std.debug.assert(options.capacity > 0);
     var keyboard = try Keyboard.init(options.keymap);
     errdefer keyboard.deinit();
     return .{

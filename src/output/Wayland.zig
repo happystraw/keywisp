@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const log = std.log;
 
 const protocol = @import("protocol");
+const wl = @import("wayland").client.wl;
 
 const Model = @import("Model.zig");
 const Cairo = @import("Wayland/cairo.zig").Cairo;
@@ -34,8 +35,10 @@ pub fn init(gpa: Allocator, appearance: Appearance) !Wayland {
             appearance.style,
             client.shm.?,
             &client.layer,
-            client.scale(),
-            subpixelToCairo(client.subpixel()),
+            .{
+                .scale = client.scale(),
+                .subpixel = subpixelToCairo(client.subpixel()),
+            },
         ),
         .flush_pending = false,
     };
@@ -88,14 +91,13 @@ pub fn flush(self: *Wayland) FlushError!void {
 }
 
 fn render(self: *Wayland) !void {
-    try self.renderer.render(.{
-        .keys = self.model.view(),
+    try self.renderer.render(self.model.view(), .{
         .scale = self.client.scale(),
         .subpixel = subpixelToCairo(self.client.subpixel()),
     });
 }
 
-fn subpixelToCairo(subpixel: anytype) Cairo.SubpixelOrder {
+fn subpixelToCairo(subpixel: wl.Output.Subpixel) Cairo.SubpixelOrder {
     return switch (subpixel) {
         .horizontal_rgb => .rgb,
         .horizontal_bgr => .bgr,

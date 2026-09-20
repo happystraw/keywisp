@@ -13,63 +13,73 @@ const Position = WaylandOptions.Position;
 const Theme = WaylandOptions.Theme;
 
 pub const USAGE =
-    "usage: " ++ project.name ++
-    \\ [options]
+    "Usage: " ++ project.name ++
+    \\ [OPTIONS]
     \\
-    \\general:
-    \\  -s, --stdout                    write events to stdout instead of Wayland
-    \\  -t, --timeout MS                clear after inactivity; 0 disables (default: 1500)
-    \\  -B, --pointer-buttons           show pointer button presses
-    \\  -S, --pointer-scroll            show pointer scroll events
-    \\  -h, --help                      show this help
-    \\  -V, --version                   show version information
+    \\Display keystrokes on Wayland, or write them to standard output.
     \\
-    \\wayland:
-    \\  --theme THEME                   dark, light, wisp-dark, or wisp-light
-    \\                                  (default: dark)
-    \\                                  explicit appearance options override the theme
-    \\  -p, --position POSITION         center, top, bottom, left, right, or a corner
-    \\                                  corners: top-left, top-right,
-    \\                                           bottom-left, bottom-right
-    \\  -m, --margin PX                 distance from the anchored edge(s)
-    \\  -w, --max-width PX              panel width limit (must be > 0)
-    \\                                  rounding may add 1px; the newest key is always shown in full
-    \\  -f, --font FONT                 Pango font description
-    \\  --panel-padding PX              padding between panel and keycaps
-    \\  --key-padding-horizontal PX     horizontal padding inside the keycap face
-    \\  --key-padding-vertical PX       vertical padding inside the keycap face
-    \\  --key-gap PX                    gap between keycaps
+    \\General options:
+    \\  -s, --stdout                    Write key labels to standard output.
+    \\  -t, --timeout MS                Clear after inactivity (default: 1500 ms).
+    \\                                  Non-negative integer; 0 disables clearing.
+    \\  -B, --pointer-buttons           Include pointer button presses.
+    \\  -S, --pointer-scroll            Include pointer scroll events.
+    \\  -h, --help                      Show this help and exit.
+    \\  -V, --version                   Show version information and exit.
     \\
-    \\  --panel-background COLOR        panel background color
-    \\  --panel-border-color COLOR      panel border color
-    \\  --panel-border-width PX         panel border width; 0 disables border
-    \\  --panel-radius PX               panel corner radius; 0 makes corners sharp
     \\
-    \\  --key-background COLOR          key background color
-    \\  --key-border-color COLOR        key outer border color
-    \\  --key-border-width PX           key outer border width; 0 disables outer border
-    \\  --key-radius PX                 key corner radius; 0 makes corners sharp
-    \\  --key-depth PX[,PX...]          1-4 comma-separated slope sizes; 0 makes it flat
-    \\                                  1: all; 2: vertical,horizontal; 3: top,horizontal,bottom
-    \\                                  4: top,right,bottom,left
-    \\  --key-shadow-color COLOR        shadow color; alpha 00 disables shadow
-    \\  --key-shadow-blur PX            shadow softness; 0 makes it sharp
-    \\  --key-shadow-offset-x PX        horizontal shadow offset; may be negative
-    \\  --key-shadow-offset-y PX        vertical shadow offset; may be negative
+    \\Wayland options:
+    \\  --theme THEME                   Color theme (default: dark).
+    \\                                  dark, light, wisp-dark, or wisp-light.
+    \\  -p, --position POSITION         Panel position (default: bottom).
+    \\                                  center, top, bottom, left, right,
+    \\                                  top-left, top-right, bottom-left,
+    \\                                  or bottom-right.
+    \\  -m, --margin PX                 Margin from anchored edges (default: 24).
+    \\                                  Non-negative integer.
+    \\  -w, --max-width PX              Width limit (positive integer; default: 600).
+    \\  -f, --font FONT                 Pango font (default: "Sans Bold 16").
+    \\  --no-collapse-repetitions       Show repeated keys separately.
     \\
-    \\  --text-color COLOR              previous key text color
-    \\  --text-highlight-color COLOR    newest key text color
+    \\  --panel-background COLOR        Panel background color.
+    \\  --panel-border-color COLOR      Panel border color.
+    \\  --panel-border-width PX         Border width; >= 0, 0 disables the border.
+    \\  --panel-radius PX               Corner radius; >= 0, 0 makes square corners.
+    \\  --panel-padding PX              Padding around keycaps; >= 0.
     \\
-    \\  --no-collapse-repetitions       show repeated inputs as separate keycaps
+    \\  --key-background COLOR          Keycap background color.
+    \\  --key-border-color COLOR        Outer border color.
+    \\  --key-border-width PX           Outer border width; >= 0, 0 disables it.
+    \\  --key-radius PX                 Corner radius; >= 0, 0 makes square corners.
+    \\  --key-padding-horizontal PX     Horizontal padding inside the face; >= 0.
+    \\  --key-padding-vertical PX       Vertical padding inside the face; >= 0.
+    \\  --key-gap PX                    Gap between keycaps; >= 0.
+    \\  --key-depth PX[,PX...]          1-4 non-negative, comma-separated side depths.
+    \\                                  0 makes the keycap flat. Values expand as:
+    \\                                  1: all; 2: top/bottom,left/right;
+    \\                                  3: top,left/right,bottom;
+    \\                                  4: top,right,bottom,left.
     \\
-    \\stdout:
-    \\  --stdout-history COUNT          entries in each line (default: 1; must be > 0)
-    \\  --stdout-emit-clear             emit an empty line when history clears
+    \\  --key-shadow-color COLOR        Shadow color; alpha 00 disables the shadow.
+    \\  --key-shadow-blur PX            Shadow softness; >= 0, 0 makes sharp edges.
+    \\  --key-shadow-offset-x PX        Horizontal offset; negative moves left.
+    \\  --key-shadow-offset-y PX        Vertical offset; negative moves up.
     \\
-    \\PX:    logical pixels; decimals allowed; --margin and --max-width require integers
-    \\       values must be non-negative, except shadow offsets
-    \\FONT:  Pango font description (default: "Sans Bold 16")
-    \\COLOR: RRGGBB or RRGGBBAA (FF is opaque, 00 is transparent)
+    \\  --text-color COLOR              Text color for previous keys.
+    \\  --text-highlight-color COLOR    Text color for the newest key.
+    \\
+    \\
+    \\Standard output options:
+    \\  --stdout-history COUNT          Maximum entries per line (default: 1).
+    \\                                  Positive integer.
+    \\  --stdout-emit-clear             Write an empty line when history clears.
+    \\
+    \\Value formats:
+    \\  PX       Logical pixels; decimals allowed unless noted.
+    \\  COLOR    Hex RRGGBB or RRGGBBAA without a # prefix.
+    \\           Alpha: 00 is transparent, FF is opaque (default if omitted).
+    \\
+    \\Option values may use --option VALUE or --option=VALUE.
     \\
     ;
 
@@ -138,9 +148,8 @@ pub fn parse(args: Args) ParseResult {
         if (isOption(option.name, "--timeout", "-t")) {
             const value = option.value orelse iterator.next() orelse
                 return .{ .diagnostic = option.missingValue() };
-            const timeout_ms = parseInt(i32, value) orelse
+            const timeout_ms = parseNumber(i32, value, .{ .min = 0 }) orelse
                 return .{ .diagnostic = option.invalidValue(value) };
-            if (timeout_ms < 0) return .{ .diagnostic = option.invalidValue(value) };
             options.app.timeout_ms = timeout_ms;
             continue;
         }
@@ -277,35 +286,27 @@ fn applyWaylandOption(
         .no_collapse_repetitions => unreachable,
         .theme => {},
         .position => appearance.position = parsePosition(value) orelse return option.invalidValue(value),
-        .margin => {
-            const margin = parseInt(i32, value) orelse return option.invalidValue(value);
-            if (margin < 0) return option.invalidValue(value);
-            appearance.margin = margin;
-        },
+        .margin => appearance.margin = parseNumber(i32, value, .{ .min = 0 }) orelse return option.invalidValue(value),
         .style => |style| switch (style) {
             .font => appearance.style.font = value,
-            .max_width => {
-                const max_width = parseInt(i32, value) orelse return option.invalidValue(value);
-                if (max_width <= 0) return option.invalidValue(value);
-                appearance.style.max_width = max_width;
-            },
-            .panel_padding => appearance.style.panel_padding = parseSpacing(value) orelse return option.invalidValue(value),
-            .key_padding_horizontal => appearance.style.key_padding_horizontal = parseSpacing(value) orelse return option.invalidValue(value),
-            .key_padding_vertical => appearance.style.key_padding_vertical = parseSpacing(value) orelse return option.invalidValue(value),
-            .key_gap => appearance.style.key_gap = parseSpacing(value) orelse return option.invalidValue(value),
+            .max_width => appearance.style.max_width = parseNumber(i32, value, .{ .min = 1 }) orelse return option.invalidValue(value),
+            .panel_padding => appearance.style.panel_padding = parseNumber(f64, value, .{ .min = 0 }) orelse return option.invalidValue(value),
+            .key_padding_horizontal => appearance.style.key_padding_horizontal = parseNumber(f64, value, .{ .min = 0 }) orelse return option.invalidValue(value),
+            .key_padding_vertical => appearance.style.key_padding_vertical = parseNumber(f64, value, .{ .min = 0 }) orelse return option.invalidValue(value),
+            .key_gap => appearance.style.key_gap = parseNumber(f64, value, .{ .min = 0 }) orelse return option.invalidValue(value),
             .panel_background => appearance.style.panel_background = parseColor(value) orelse return option.invalidValue(value),
             .panel_border_color => appearance.style.panel_border_color = parseColor(value) orelse return option.invalidValue(value),
-            .panel_border_width => appearance.style.panel_border_width = parseSpacing(value) orelse return option.invalidValue(value),
-            .panel_radius => appearance.style.panel_radius = parseSpacing(value) orelse return option.invalidValue(value),
+            .panel_border_width => appearance.style.panel_border_width = parseNumber(f64, value, .{ .min = 0 }) orelse return option.invalidValue(value),
+            .panel_radius => appearance.style.panel_radius = parseNumber(f64, value, .{ .min = 0 }) orelse return option.invalidValue(value),
             .key_background => appearance.style.key_background = parseColor(value) orelse return option.invalidValue(value),
             .key_border_color => appearance.style.key_border_color = parseColor(value) orelse return option.invalidValue(value),
-            .key_border_width => appearance.style.key_border_width = parseSpacing(value) orelse return option.invalidValue(value),
-            .key_radius => appearance.style.key_radius = parseSpacing(value) orelse return option.invalidValue(value),
-            .key_depth => appearance.style.key_depth = parseDepth(value) orelse return option.invalidValue(value),
+            .key_border_width => appearance.style.key_border_width = parseNumber(f64, value, .{ .min = 0 }) orelse return option.invalidValue(value),
+            .key_radius => appearance.style.key_radius = parseNumber(f64, value, .{ .min = 0 }) orelse return option.invalidValue(value),
+            .key_depth => appearance.style.key_depth = parseDepth(value, .{ .min = 0 }) orelse return option.invalidValue(value),
             .key_shadow_color => appearance.style.key_shadow_color = parseColor(value) orelse return option.invalidValue(value),
-            .key_shadow_blur => appearance.style.key_shadow_blur = parseSpacing(value) orelse return option.invalidValue(value),
-            .key_shadow_offset_x => appearance.style.key_shadow_offset_x = parsePixels(value) orelse return option.invalidValue(value),
-            .key_shadow_offset_y => appearance.style.key_shadow_offset_y = parsePixels(value) orelse return option.invalidValue(value),
+            .key_shadow_blur => appearance.style.key_shadow_blur = parseNumber(f64, value, .{ .min = 0 }) orelse return option.invalidValue(value),
+            .key_shadow_offset_x => appearance.style.key_shadow_offset_x = parseNumber(f64, value, .{}) orelse return option.invalidValue(value),
+            .key_shadow_offset_y => appearance.style.key_shadow_offset_y = parseNumber(f64, value, .{}) orelse return option.invalidValue(value),
             .text_color => appearance.style.text_color = parseColor(value) orelse return option.invalidValue(value),
             .text_highlight_color => appearance.style.text_highlight_color = parseColor(value) orelse return option.invalidValue(value),
         },
@@ -342,8 +343,7 @@ fn applyWriterOption(
         .stdout => {},
         .history => {
             const value = option.value orelse args.next() orelse return option.missingValue();
-            const count = parseInt(usize, value) orelse return option.invalidValue(value);
-            if (count == 0) return option.invalidValue(value);
+            const count = parseNumber(usize, value, .{ .min = 1 }) orelse return option.invalidValue(value);
             options.history = count;
         },
         .emit_clear => {
@@ -396,17 +396,32 @@ fn parseColor(value: []const u8) ?Color {
     return .rgba(if (value.len == 6) (color << 8) | 0xFF else color);
 }
 
-fn parseInt(comptime T: type, value: []const u8) ?T {
-    return std.fmt.parseInt(T, value, 10) catch null;
+fn Range(comptime T: type) type {
+    return struct { min: ?T = null, max: ?T = null };
 }
 
-fn parseDepth(value: []const u8) ?WaylandOptions.Depth {
+fn parseNumber(comptime T: type, value: []const u8, range: Range(T)) ?T {
+    const number = switch (@typeInfo(T)) {
+        .int => std.fmt.parseInt(T, value, 10) catch return null,
+        .float => float: {
+            const number = std.fmt.parseFloat(T, value) catch return null;
+            if (!std.math.isFinite(number)) return null;
+            break :float number;
+        },
+        else => @compileError("expected an integer or floating-point type"),
+    };
+    if (range.min) |min| if (number < min) return null;
+    if (range.max) |max| if (number > max) return null;
+    return number;
+}
+
+fn parseDepth(value: []const u8, range: Range(f64)) ?WaylandOptions.Depth {
     var parts = std.mem.splitScalar(u8, value, ',');
     var sizes: [4]f64 = undefined;
     var count: usize = 0;
     while (parts.next()) |part| {
         if (count == sizes.len) return null;
-        const size = parseSpacing(std.mem.trim(u8, part, " \t")) orelse return null;
+        const size = parseNumber(f64, std.mem.trim(u8, part, " \t"), range) orelse return null;
         sizes[count] = size;
         count += 1;
     }
@@ -416,16 +431,6 @@ fn parseDepth(value: []const u8) ?WaylandOptions.Depth {
         .bottom = if (count > 2) sizes[2] else sizes[0],
         .left = if (count > 3) sizes[3] else if (count > 1) sizes[1] else sizes[0],
     };
-}
-
-fn parsePixels(value: []const u8) ?f64 {
-    const pixels = std.fmt.parseFloat(f64, value) catch return null;
-    return if (std.math.isFinite(pixels)) pixels else null;
-}
-
-fn parseSpacing(value: []const u8) ?f64 {
-    const spacing = parsePixels(value) orelse return null;
-    return if (spacing >= 0) spacing else null;
 }
 
 const positions = std.StaticStringMap(Position).initComptime(.{
@@ -622,9 +627,17 @@ test "integer boundaries" {
     };
     try std.testing.expectEqual(0, no_timeout.app.timeout_ms);
 
+    const largest = parse(.{ .vector = &.{ "test-cli", "--margin=2147483647", "--max-width=2147483647" } }).run.output.wayland;
+    try std.testing.expectEqual(std.math.maxInt(i32), largest.margin);
+    try std.testing.expectEqual(std.math.maxInt(i32), largest.style.max_width);
+
     inline for (.{
         .{ "--timeout", "-1" },
+        .{ "--timeout", "2147483648" },
         .{ "--max-width", "0" },
+        .{ "--max-width", "2147483648" },
+        .{ "--margin", "-1" },
+        .{ "--margin", "2147483648" },
         .{ "--panel-radius", "-1" },
         .{ "--panel-padding", "-1" },
         .{ "--key-padding-horizontal", "-1" },
@@ -694,6 +707,7 @@ test "key depth expands one to four sizes and overrides themes in either order" 
         .{ .value = "4,8,6", .expected = .{ .top = 4, .right = 8, .bottom = 6, .left = 8 } },
         .{ .value = "1,2,3,4", .expected = .{ .top = 1, .right = 2, .bottom = 3, .left = 4 } },
         .{ .value = "0, 0.25, 2.5, 4.75", .expected = .{ .top = 0, .right = 0.25, .bottom = 2.5, .left = 4.75 } },
+        .{ .value = "1e100", .expected = .uniform(1e100) },
     };
     for (cases) |case| {
         for ([_][:0]const u8{ "dark", "light", "wisp-dark", "wisp-light" }) |theme| {
@@ -742,6 +756,8 @@ test "pixel styles accept decimals while margin and max width remain integers" {
             else => return error.UnexpectedResult,
         };
         try std.testing.expectEqual(1.25, @field(options.output.wayland.style, option[1]));
+        const large = parse(.{ .vector = &.{ "test-cli", option[0], "1e100" } }).run.output.wayland.style;
+        try std.testing.expectEqual(@as(f64, 1e100), @field(large, option[1]));
         for ([_][*:0]const u8{ "nan", "inf", "1e999" }) |value| {
             const result = parse(.{ .vector = &.{ "test-cli", option[0], value } });
             try std.testing.expectEqual(Diagnostic.Kind.invalid_value, result.diagnostic.kind);
@@ -754,4 +770,16 @@ test "pixel styles accept decimals while margin and max width remain integers" {
     const offsets = parse(.{ .vector = &.{ "test-cli", "--key-shadow-offset-x=-1.25", "--key-shadow-offset-y=-0.5" } }).run.output.wayland.style;
     try std.testing.expectEqual(-1.25, offsets.key_shadow_offset_x);
     try std.testing.expectEqual(-0.5, offsets.key_shadow_offset_y);
+    const negative = parse(.{ .vector = &.{ "test-cli", "--key-shadow-offset-x=-1e100", "--key-shadow-offset-y=-1e100" } }).run.output.wayland.style;
+    try std.testing.expectEqual(@as(f64, -1e100), negative.key_shadow_offset_x);
+    try std.testing.expectEqual(@as(f64, -1e100), negative.key_shadow_offset_y);
+}
+
+test "numeric ranges have optional inclusive bounds" {
+    inline for (.{ i32, f64 }) |T| {
+        try std.testing.expectEqual(@as(?T, 2), parseNumber(T, "2", .{ .min = 2, .max = 2 }));
+        try std.testing.expectEqual(@as(?T, null), parseNumber(T, "1", .{ .min = 2 }));
+        try std.testing.expectEqual(@as(?T, null), parseNumber(T, "3", .{ .max = 2 }));
+        try std.testing.expectEqual(@as(?T, -1), parseNumber(T, "-1", .{}));
+    }
 }

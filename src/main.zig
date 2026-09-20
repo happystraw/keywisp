@@ -5,11 +5,13 @@ const Io = std.Io;
 const App = @import("App.zig");
 const cli = @import("cli.zig");
 
-pub fn main(init: std.process.Init) !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     const gpa = std.heap.c_allocator;
-    const io = init.io;
 
-    const options: cli.RunOptions = switch (cli.parse(init.minimal.args)) {
+    var threaded: Io.Threaded = .init(gpa, .{});
+    const io = threaded.io();
+
+    const options: cli.RunOptions = switch (cli.parse(init.args)) {
         .run => |options| options,
         .help => {
             var buf: [4096]u8 = undefined;
