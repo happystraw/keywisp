@@ -17,13 +17,12 @@ const Renderer = @This();
 
 const Frame = struct {
     buffer: ShmBuffer,
-    released: bool = false,
-    next: ?*Frame = null,
+    busy: bool = false,
 
     fn listener(buffer: *wl.Buffer, event: wl.Buffer.Event, self: *Frame) void {
         _ = buffer;
         switch (event) {
-            .release => self.released = true,
+            .release => self.busy = false,
         }
     }
 };
@@ -32,7 +31,7 @@ context: drawing.Context,
 gpa: Allocator,
 shm: *wl.Shm,
 target: *LayerSurface,
-pending_frames: ?*Frame = null,
+frames: [2]?*Frame = .{ null, null },
 
 pub fn init(
     gpa: Allocator,
@@ -51,29 +50,49 @@ pub fn init(
 
 pub fn deinit(self: *Renderer) void {
     defer self.context.deinit(self.gpa);
-    var frame = self.pending_frames;
-    while (frame) |item| {
-        const next = item.next;
-        item.buffer.deinit();
-        self.gpa.destroy(item);
-        frame = next;
-    }
-}
-
-pub fn reap(self: *Renderer) void {
-    var link = &self.pending_frames;
-    while (link.*) |frame| {
-        if (!frame.released) {
-            link = &frame.next;
-            continue;
+    for (self.frames) |slot| {
+        if (slot) |frame| {
+            frame.buffer.deinit();
+            self.gpa.destroy(frame);
         }
-        link.* = frame.next;
-        frame.buffer.deinit();
-        self.gpa.destroy(frame);
     }
 }
 
-pub fn render(self: *Renderer, keys: Model.View, settings: pango.FontContext.Settings) !void {
+fn prepareFrame(self: *Renderer, width: i32, height: i32) !?*Frame {
+    const crop = self.target.viewport != null;
+    for (&self.frames) |*slot| {
+        if (slot.*) |frame| {
+            if (frame.busy) continue;
+            const capacity_width = if (crop) @max(frame.buffer.width, width) else width;
+            const capacity_height = if (crop) @max(frame.buffer.height, height) else height;
+            if (capacity_width != frame.buffer.width or capacity_height != frame.buffer.height) {
+                const buffer = try ShmBuffer.init(self.shm, capacity_width, capacity_height);
+                frame.buffer.deinit();
+                frame.buffer = buffer;
+                frame.buffer.setListener(*Frame, Frame.listener, frame);
+            }
+            return frame;
+        }
+        // Preallocate only on first use; later allocations grow to the actual need.
+        const scale = self.context.font.settings.scale;
+        const reserved_width = if (crop)
+            try scaledSize(try surfaceSize(@as(f64, @floatFromInt(self.context.style.max_width))), scale)
+        else
+            width;
+        const reserved_height = if (crop) try scaledSize(try surfaceSize(self.context.geometry.panel_height), scale) else height;
+        const frame = try self.gpa.create(Frame);
+        errdefer self.gpa.destroy(frame);
+        frame.* = .{ .buffer = try .init(self.shm, @max(width, reserved_width), @max(height, reserved_height)) };
+        frame.buffer.setListener(*Frame, Frame.listener, frame);
+        slot.* = frame;
+        return frame;
+    }
+    return null;
+}
+
+pub const RenderResult = enum { submitted, deferred };
+
+pub fn render(self: *Renderer, keys: Model.View, settings: pango.FontContext.Settings) !RenderResult {
     const context = &self.context;
     const target = self.target;
     const scale = settings.scale;
@@ -91,41 +110,31 @@ pub fn render(self: *Renderer, keys: Model.View, settings: pango.FontContext.Set
     const buffer_width = try scaledSize(logical_width, scale);
     const buffer_height = try scaledSize(logical_height, scale);
 
-    // 2. Size changed → request a new layer surface size
+    // 2. Reuse a released slot; viewports allow preallocation and growth without shrinking.
+    const frame = (try self.prepareFrame(buffer_width, buffer_height)) orelse return .deferred;
+
+    // 3. Draw only the visible area of the larger allocation.
+    try self.paint(frame.buffer.cairo, layout, buffer_width, buffer_height);
+
+    // 4. Size changed → request a new layer surface size.
     if (new_w != target.width or new_h != target.height) {
         target.setSize(new_w, new_h);
     }
 
-    // 3. Create a frame buffer.
-    const frame = try self.gpa.create(Frame);
-    errdefer self.gpa.destroy(frame);
-    frame.* = .{
-        .buffer = try .init(
-            self.shm,
-            buffer_width,
-            buffer_height,
-            .argb8888,
-        ),
-    };
-    errdefer frame.buffer.deinit();
-
-    // 4. Draw directly into the frame buffer.
-    try self.paint(frame.buffer.cairo, layout);
-
-    frame.next = self.pending_frames;
-    self.pending_frames = frame;
-    frame.buffer.setListener(*Frame, Frame.listener, frame);
-
     // 5. Commit.
-    if (target.preferred_scale != null) {
-        target.viewport.?.setDestination(logical_width, logical_height);
+    if (target.viewport) |viewport| {
+        std.debug.assert(buffer_width <= std.math.maxInt(i24) and buffer_height <= std.math.maxInt(i24));
+        viewport.setSource(.fromInt(0), .fromInt(0), .fromInt(@intCast(buffer_width)), .fromInt(@intCast(buffer_height)));
+        viewport.setDestination(logical_width, logical_height);
         target.surface.setBufferScale(1);
     } else {
         target.surface.setBufferScale(@intCast(scale / 120));
     }
     target.surface.attach(frame.buffer.buffer, 0, 0);
-    target.surface.damageBuffer(0, 0, frame.buffer.width, frame.buffer.height);
+    target.surface.damageBuffer(0, 0, buffer_width, buffer_height);
+    frame.busy = true;
     target.surface.commit();
+    return .submitted;
 }
 
 const PanelLayout = struct { keys: []const *const Measurement, width: f64, height: f64 };
@@ -161,12 +170,19 @@ fn measure(self: *Renderer, keys: Model.View, measurements: []*const Measurement
     };
 }
 
-fn paint(self: *Renderer, cairo: *Cairo, layout: PanelLayout) !void {
+fn paint(self: *Renderer, cairo: *Cairo, layout: PanelLayout, buffer_width: i32, buffer_height: i32) !void {
     const context = &self.context;
     const style = context.style;
     const geometry = &context.geometry;
+
+    cairo.save();
+    defer cairo.restore();
+    cairo.identityMatrix();
+    cairo.rectangle(0, 0, @floatFromInt(buffer_width), @floatFromInt(buffer_height));
+    cairo.clip();
     cairo.setOperator(.clear);
     cairo.paint();
+
     cairo.setOperator(.source);
     context.setupCairo(cairo);
 
@@ -215,6 +231,25 @@ fn surfaceSize(value: f64) error{LayoutSizeOverflow}!i32 {
 fn scaledSize(logical_size: i32, scale_numerator: u32) error{BufferSizeOverflow}!i32 {
     const product = @as(u64, @intCast(logical_size)) * scale_numerator;
     return std.math.cast(i32, @max(1, (product + 60) / 120)) orelse error.BufferSizeOverflow;
+}
+
+test "busy frame slots wait for release before reuse" {
+    const gpa = std.testing.allocator;
+    var target: LayerSurface = .{ .surface = undefined, .layer_surface = undefined };
+    var renderer = try Renderer.init(gpa, Appearance.themed(.dark).style, undefined, &target, .{ .scale = 120, .subpixel = .default });
+    defer renderer.context.deinit(gpa);
+    var frames = [_]Frame{
+        .{ .buffer = undefined, .busy = true },
+        .{ .buffer = undefined, .busy = true },
+    };
+    renderer.frames = .{ &frames[0], &frames[1] };
+    try std.testing.expect((try renderer.prepareFrame(80, 80)) == null);
+    // An idle slot with sufficient storage must not access shm or reallocate.
+    frames[0].buffer.width = 80;
+    frames[0].buffer.height = 80;
+    Frame.listener(undefined, .release, &frames[0]);
+    try std.testing.expectEqual(&frames[0], (try renderer.prepareFrame(80, 80)).?);
+    try std.testing.expect(frames[1].busy);
 }
 
 test "surface dimensions clamp zero, round fractions and reject overflow" {
@@ -332,7 +367,7 @@ test "cached painting matches cold painting after output settings change" {
                 const cairo = try Cairo.create(surface);
                 defer cairo.destroy();
                 const view = if (pass == 3) Model.View{ .first = &.{}, .second = &.{} } else keys;
-                try renderer.paint(cairo, try renderer.measure(view, &measurements));
+                try renderer.paint(cairo, try renderer.measure(view, &measurements), width, height);
                 try std.testing.expectEqual(Cairo.Status.success, cairo.status());
             }
             switch (pass) {
@@ -356,5 +391,5 @@ test "cached painting matches cold painting after output settings change" {
     const layout = try renderer.measure(keys, &measurements);
     renderer.context.bitmaps.capacity = 1;
     renderer.context.bitmaps.max_bytes = 1;
-    try std.testing.expectError(error.CacheBudgetExceeded, renderer.paint(cairo, layout));
+    try std.testing.expectError(error.CacheBudgetExceeded, renderer.paint(cairo, layout, 1, 1));
 }

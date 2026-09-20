@@ -101,7 +101,7 @@ const Entry = struct {
 };
 
 entries: ?*Entry = null,
-capacity: usize = 64,
+capacity: usize = 32,
 max_bytes: usize = 64 * 1024 * 1024,
 
 pub fn clear(self: *BitmapCache, gpa: std.mem.Allocator) void {

@@ -20,7 +20,7 @@ width: i32,
 height: i32,
 
 pub const InitError = std.posix.MemFdCreateError || std.posix.MMapError || ResizeError || Cairo.CreateError || error{BufferSizeOverflow};
-pub fn init(shm: *wl.Shm, width: i32, height: i32, format: wl.Shm.Format) InitError!ShmBuffer {
+pub fn init(shm: *wl.Shm, width: i32, height: i32) InitError!ShmBuffer {
     std.debug.assert(width > 0 and height > 0);
     const stride = std.math.mul(i32, width, 4) catch return error.BufferSizeOverflow;
     const size = std.math.mul(i32, stride, height) catch return error.BufferSizeOverflow;
@@ -43,7 +43,7 @@ pub fn init(shm: *wl.Shm, width: i32, height: i32, format: wl.Shm.Format) InitEr
     const pool = try shm.createPool(fd, size);
     defer pool.destroy();
 
-    const buffer = try pool.createBuffer(0, width, height, stride, format);
+    const buffer = try pool.createBuffer(0, width, height, stride, .argb8888);
     errdefer buffer.destroy();
 
     const surface = try Cairo.Surface.image(data.ptr, .argb32, width, height, stride);

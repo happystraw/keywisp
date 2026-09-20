@@ -16,8 +16,6 @@ pub const USAGE =
     "Usage: " ++ project.name ++
     \\ [OPTIONS]
     \\
-    \\Display keystrokes on Wayland, or write them to standard output.
-    \\
     \\General options:
     \\  -s, --stdout                    Write key labels to standard output.
     \\  -t, --timeout MS                Clear after inactivity (default: 1500 ms).

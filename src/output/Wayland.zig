@@ -18,6 +18,7 @@ model: Model,
 client: *Client,
 renderer: Renderer,
 flush_pending: bool,
+dirty: bool = false,
 
 pub fn init(gpa: Allocator, appearance: Appearance) !Wayland {
     const client = try Client.create(gpa, appearance.position, appearance.margin);
@@ -56,12 +57,10 @@ pub fn fd(self: *const Wayland) c_int {
 
 pub fn dispatch(self: *Wayland) !void {
     try self.client.dispatch();
-    self.renderer.reap();
     const changes = self.client.state.takeChanges();
     if (changes.keymap)
         try self.model.setSerializedKeymap(self.client.serializedKeymap());
-    if (changes.render)
-        try self.render();
+    if (changes.render or self.dirty) try self.render();
     try self.flush();
 }
 
@@ -91,10 +90,12 @@ pub fn flush(self: *Wayland) FlushError!void {
 }
 
 fn render(self: *Wayland) !void {
-    try self.renderer.render(self.model.view(), .{
+    self.dirty = true;
+    const result = try self.renderer.render(self.model.view(), .{
         .scale = self.client.scale(),
         .subpixel = subpixelToCairo(self.client.subpixel()),
     });
+    if (result == .submitted) self.dirty = false;
 }
 
 fn subpixelToCairo(subpixel: wl.Output.Subpixel) Cairo.SubpixelOrder {

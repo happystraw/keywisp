@@ -28,9 +28,11 @@ pub fn init(compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, options
     errdefer if (viewport) |value| value.destroy();
     var fractional_scale: ?*wp.FractionalScaleV1 = null;
     errdefer if (fractional_scale) |value| value.destroy();
-    if (options.viewporter != null and options.fractional_scale_manager != null) {
-        viewport = try options.viewporter.?.getViewport(surface);
-        fractional_scale = try options.fractional_scale_manager.?.getFractionalScale(surface);
+    if (options.viewporter) |viewporter| {
+        viewport = try viewporter.getViewport(surface);
+        if (options.fractional_scale_manager) |manager| {
+            fractional_scale = try manager.getFractionalScale(surface);
+        }
     }
     const layer_surface = try layer_shell.getLayerSurface(surface, null, .overlay, options.namespace.ptr);
     errdefer layer_surface.destroy();
