@@ -119,6 +119,7 @@ fn addExamples(b: *std.Build, options: Options, input_mod: *std.Build.Module, ou
         .{ .name = "input", .import_name = "input", .dependency = input_mod, .description = "Build the /dev/input example" },
         .{ .name = "output-writer", .import_name = "output", .dependency = output_mod, .description = "Build the Writer output example" },
         .{ .name = "output-wayland", .import_name = "output", .dependency = output_mod, .description = "Build the Wayland output example" },
+        .{ .name = "output-wayland-benchmark", .import_name = "output", .dependency = output_mod, .description = "Build the repeatable Wayland rendering benchmark" },
     };
 
     for (examples) |example| {

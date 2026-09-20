@@ -1,6 +1,6 @@
 .{
     .name = .keywisp,
-    .version = "0.1.0",
+    .version = "0.3.0",
     .fingerprint = 0x5ddfe8b55aa71914,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
