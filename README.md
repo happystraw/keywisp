@@ -98,6 +98,30 @@ Run the following command for all available options:
 keywisp --help
 ```
 
+### Pause and resume
+
+Enable signal control with `-c` / `--signal-control`:
+
+```sh
+keywisp -c
+```
+
+From another terminal or a WM script:
+
+```sh
+pkill -USR1 -x keywisp  # pause and clear the display
+pkill -USR2 -x keywisp  # resume
+```
+
+These commands affect all matching instances; use `kill -USR1 PID` /
+`kill -USR2 PID` to target one.
+Without `-c`, these signals normally terminate Keywisp. If both are pending,
+pause takes priority.
+
+See the [polkit examples](examples/polkit/README.md) for niri, Hyprland, and Sway
+scripts that pause while an authentication window is focused and resume when
+focus leaves it.
+
 ### Waybar integration
 
 Keywisp can run in `--stdout` mode and be used as a Waybar `custom` module.

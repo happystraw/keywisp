@@ -3,47 +3,48 @@ const posix = std.posix;
 
 const Poller = @This();
 
-pollfds: [2]posix.pollfd,
-count: usize,
+pollfds: [3]posix.pollfd,
 
 pub const Ready = struct {
+    signals: bool = false,
     input: bool = false,
     output_readable: bool = false,
     output_writable: bool = false,
 };
 
-pub fn init(input_fd: posix.fd_t, output_fd: ?posix.fd_t) Poller {
-    var self: Poller = .{
-        .pollfds = undefined,
-        .count = 1,
+pub fn init(input_fd: posix.fd_t, output_fd: ?posix.fd_t, signals_fd: ?posix.fd_t) Poller {
+    return .{
+        .pollfds = .{
+            pollfd(input_fd),
+            pollfd(signals_fd orelse -1),
+            pollfd(output_fd orelse -1),
+        },
     };
-    self.pollfds[0] = pollfd(input_fd);
-    if (output_fd) |fd| {
-        self.pollfds[1] = pollfd(fd);
-        self.count = 2;
-    }
-    return self;
 }
 
 pub fn setOutputWritable(self: *Poller, enabled: bool) void {
-    if (self.count != 2) return;
-    self.pollfds[1].events = @as(i16, posix.POLL.IN) |
+    self.pollfds[2].events = @as(i16, posix.POLL.IN) |
         if (enabled) @as(i16, posix.POLL.OUT) else 0;
 }
 
-pub const WaitError = posix.PollError || error{ InvalidInputFd, InvalidOutputFd };
+pub const WaitError = posix.PollError || error{ InvalidInputFd, InvalidOutputFd, InvalidSignalsFd };
 pub fn wait(self: *Poller, timeout_ms: i32) WaitError!Ready {
     std.debug.assert(timeout_ms >= -1);
-    _ = try posix.poll(self.pollfds[0..self.count], timeout_ms);
-    for (self.pollfds[0..self.count], 0..) |fd, index| {
+    _ = try posix.poll(&self.pollfds, timeout_ms);
+    for (self.pollfds, 0..) |fd, index| {
         if ((fd.revents & posix.POLL.NVAL) != 0)
-            return if (index == 0) error.InvalidInputFd else error.InvalidOutputFd;
+            return switch (index) {
+                0 => error.InvalidInputFd,
+                1 => error.InvalidSignalsFd,
+                else => error.InvalidOutputFd,
+            };
     }
 
     return .{
         .input = isReadable(self.pollfds[0].revents),
-        .output_readable = self.count == 2 and isReadable(self.pollfds[1].revents),
-        .output_writable = self.count == 2 and isWritable(self.pollfds[1].revents),
+        .signals = isReadable(self.pollfds[1].revents),
+        .output_readable = isReadable(self.pollfds[2].revents),
+        .output_writable = isWritable(self.pollfds[2].revents),
     };
 }
 

@@ -12,6 +12,7 @@ pub fn main() !void {
         _ = try posix.poll(&pollfd, -1);
         try device.dispatch();
         while (device.next()) |event| switch (event) {
+            .command => unreachable, // LibInput only produces device events.
             .keyboard => |keyboard| std.debug.print("keyboard code={s}({d}) state={s}\n", .{
                 enumName(keyboard.code),
                 @intFromEnum(keyboard.code),

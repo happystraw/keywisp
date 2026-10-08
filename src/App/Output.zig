@@ -1,8 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const protocol = @import("protocol");
 const output = @import("output");
+const protocol = @import("protocol");
+const RecordingState = protocol.Event.Command.RecordingState;
 
 pub const WaylandOptions = output.Wayland.Appearance;
 pub const WriterOptions = output.Writer.Options;
@@ -76,4 +77,11 @@ pub fn clear(self: *Output) !void {
         .wayland => |*wayland| try wayland.clear(),
         .writer => |*writer| try writer.clear(),
     }
+}
+
+pub fn recordingState(self: *const Output) RecordingState {
+    return switch (self.backend) {
+        .wayland => |*wayland| wayland.model.recording,
+        .writer => |*writer| writer.model.recording,
+    };
 }

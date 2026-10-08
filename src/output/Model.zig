@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const log = std.log;
 
 const protocol = @import("protocol");
+const RecordingState = protocol.Event.Command.RecordingState;
 
 pub const Entry = @import("Model/Entry.zig");
 const Keyboard = @import("Model/Keyboard.zig");
@@ -19,6 +20,7 @@ len: usize = 0,
 modifiers: Modifiers = .{},
 repetition: usize = 0,
 collapse_repetitions: bool,
+recording: RecordingState = .enabled,
 
 keyboard: Keyboard,
 gpa: Allocator,
@@ -126,17 +128,26 @@ fn last(self: *Model) ?*Entry {
 
 pub fn handle(self: *Model, event: protocol.Event) Allocator.Error!Change {
     return switch (event) {
+        .command => |command| switch (command) {
+            .recording => |state| blk: {
+                if (self.recording == state) break :blk .none;
+                if (state == .disabled) self.clear();
+                self.recording = state;
+                break :blk if (state == .disabled) .changed else .none;
+            },
+        },
         .keyboard => |keyboard| blk: {
             var name_buffer: [64]u8 = undefined;
-            var text_buffer: [64]u8 = undefined;
             self.keyboard.update(keyboard);
             const keysym = self.keyboard.keysym(keyboard.code);
             const name = Keyboard.name(keysym, &name_buffer) orelse break :blk .none;
             if (self.modifiers.update(name, keyboard.state != .released)) break :blk .none;
-            if (keyboard.state == .released) break :blk .none;
+            if (self.recording == .disabled or keyboard.state == .released) break :blk .none;
+            var text_buffer: [64]u8 = undefined;
             break :blk self.record(name, Keyboard.text(keysym, &text_buffer));
         },
         .pointer => |pointer_event| blk: {
+            if (self.recording == .disabled) break :blk .none;
             const name: []const u8 = switch (pointer_event) {
                 .button => |button| button: {
                     if (button.state == .released) break :blk .none;

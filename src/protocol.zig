@@ -18,34 +18,17 @@ pub const Event = union(enum) {
 
         pub const Scroll = enum { up, down, left, right };
 
-        pub const State = union(enum) {
-            button: Button.State,
-            scroll,
-        };
-
         button: Button,
         scroll: Scroll,
-
-        pub fn state(self: Pointer) Pointer.State {
-            return switch (self) {
-                .button => |button| .{ .button = button.state },
-                .scroll => .scroll,
-            };
-        }
     };
 
-    pub const State = union(enum) {
-        keyboard: Keyboard.State,
-        pointer: Pointer.State,
+    pub const Command = union(enum) {
+        pub const RecordingState = enum { enabled, disabled };
+
+        recording: RecordingState,
     };
 
     keyboard: Keyboard,
     pointer: Pointer,
-
-    pub fn state(self: Event) Event.State {
-        return switch (self) {
-            .keyboard => |keyboard| .{ .keyboard = keyboard.state },
-            .pointer => |pointer| .{ .pointer = pointer.state() },
-        };
-    }
+    command: Command,
 };

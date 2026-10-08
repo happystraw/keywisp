@@ -17,6 +17,7 @@ pub const USAGE =
     \\ [OPTIONS]
     \\
     \\General options:
+    \\  -c, --signal-control            Enable SIGUSR1 pause / SIGUSR2 resume control.
     \\  -s, --stdout                    Write key labels to standard output.
     \\  -t, --timeout MS                Clear after inactivity (default: 1500 ms).
     \\                                  Non-negative integer; 0 disables clearing.
@@ -149,6 +150,11 @@ pub fn parse(args: Args) ParseResult {
             const timeout_ms = parseNumber(i32, value, .{ .min = 0 }) orelse
                 return .{ .diagnostic = option.invalidValue(value) };
             options.app.timeout_ms = timeout_ms;
+            continue;
+        }
+        if (isOption(option.name, "--signal-control", "-c")) {
+            if (option.rejectValue()) |diagnostic| return .{ .diagnostic = diagnostic };
+            options.app.signal_control = true;
             continue;
         }
         if (isOption(option.name, "--pointer-buttons", "-B")) {
@@ -523,6 +529,7 @@ test "defaults" {
         .run => |options| options,
         else => return error.UnexpectedResult,
     };
+    try std.testing.expect(!options.app.signal_control);
     try std.testing.expectEqual(App.Options{}, options.app);
     switch (options.output) {
         .wayland => |appearance| {
@@ -656,6 +663,8 @@ test "integer boundaries" {
 test "diagnostics" {
     inline for (.{
         .{ &.{ "test-cli", "--bogus" }, Diagnostic.Kind.unknown_option, "--bogus" },
+        .{ &.{ "test-cli", "--signal-control=true" }, Diagnostic.Kind.unexpected_value, "--signal-control" },
+        .{ &.{ "test-cli", "-c=true" }, Diagnostic.Kind.unexpected_value, "-c" },
         .{ &.{ "test-cli", "--theme" }, Diagnostic.Kind.missing_value, "--theme" },
         .{ &.{ "test-cli", "--theme=unknown" }, Diagnostic.Kind.invalid_value, "--theme" },
         .{ &.{ "test-cli", "--panel-background=#123456" }, Diagnostic.Kind.invalid_value, "--panel-background" },
